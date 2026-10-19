@@ -1,12 +1,11 @@
 <script lang="ts">
   // "Butters so far": everything freed since install. The big number counts
   // up like butter softening; the per-kind bars pour in one after another.
-  import { onMount } from "svelte";
   import { Tween } from "svelte/motion";
   import { api, type Culprit, type Smoothness } from "./api";
   import { bytes } from "./format";
   import Icon from "./Icon.svelte";
-  import { butterEase, ms, pour } from "./motion";
+  import { butterEase, dissolve, ms } from "./motion";
 
   let { smooth, onBack, tab: initialTab = "life" }: { smooth: Smoothness | null; onBack: () => void; tab?: "life" | "fan" } = $props();
 
@@ -62,13 +61,22 @@
   const since = $derived(life?.since ? new Date(life.since * 1000) : null);
   const days = $derived(since ? Math.max(1, Math.floor((Date.now() - since.getTime()) / 86_400_000)) : 0);
 
+  // The total eases up over the last stretch only, so it settles rather than
+  // racing from zero; switching tabs doesn't replay it.
+  let counted = false;
   $effect(() => {
-    total.set(life?.freed ?? 0, { duration: ms(1100), delay: ms(150) });
+    const target = life?.freed ?? 0;
+    if (!counted && target > 0) {
+      counted = true;
+      total.set(target * 0.82, { duration: 0 });
+      total.set(target, { duration: ms(650) });
+    } else {
+      total.set(target, { duration: ms(400) });
+    }
   });
-  onMount(() => () => total.set(0, { duration: 0 }));
 </script>
 
-<section class="view" aria-label="Stats" in:pour={{ y: -6 }}>
+<section class="view" aria-label="Stats" in:dissolve={{ duration: 220, blur: 3 }} out:dissolve={{ duration: 160, blur: 3 }}>
   <header class="head">
     <div class="status">
       <button class="ghost" type="button" aria-label="Back" title="Back" onclick={onBack}><Icon name="back" /></button>
@@ -80,17 +88,18 @@
     <button type="button" role="tab" aria-selected={tab === "fan"} class:on={tab === "fan"} onclick={() => (tab = "fan")}>Fan</button>
   </div>
 
-  <div class="scroll stats">
+  {#key tab}
+  <div class="scroll stats" in:dissolve={{ duration: 180, blur: 2 }}>
     {#if tab === "fan"}
       {#if !fan}
         <p class="empty muted">Reading…</p>
       {:else if !fan.culprits.length}
-        <p class="empty muted" in:pour>All quiet{fan.minutes < 5 ? " so far" : ""}</p>
+        <p class="empty muted">All quiet{fan.minutes < 5 ? " so far" : ""}</p>
       {:else}
-        <p class="window muted" in:pour>Last {fan.minutes} min, average CPU</p>
+        <p class="window muted">Last {fan.minutes} min, average CPU</p>
         <ul class="fan">
-          {#each fan.culprits as c, i (c.label)}
-            <li in:pour={{ delay: 40 + i * 50 }} title={`${c.label}: avg ${Math.round(c.avg)}%, peak ${Math.round(c.peak)}% (100% = one core)`}>
+          {#each fan.culprits as c (c.label)}
+            <li title={`${c.label}: avg ${Math.round(c.avg)}%, peak ${Math.round(c.peak)}% (100% = one core)`}>
               <span class="f-label">{c.label}</span>
               <svg class="f-spark" viewBox="0 0 90 18" preserveAspectRatio="none" aria-hidden="true">
                 <path d={spark(c.series, 90, 18)} />
@@ -101,9 +110,9 @@
         </ul>
       {/if}
     {:else if !life || life.closed === 0}
-      <p class="empty muted" in:pour>Nothing closed yet</p>
+      <p class="empty muted">Nothing closed yet</p>
     {:else}
-      <div class="hero" in:pour={{ delay: 40 }}>
+      <div class="hero">
         <p class="label">Freed in total</p>
         <p class="big" aria-label={`${bytes(life.freed)} freed in total`}>
           <span class="num">{big[0]}</span><span class="unit">{big[1]}</span>
@@ -115,7 +124,7 @@
         {/if}
       </div>
 
-      <div class="grid" in:pour={{ delay: 120 }}>
+      <div class="grid">
         <div class="cell"><span class="muted">Closed</span><strong>{life.closed}</strong></div>
         <div class="cell"><span class="muted">Best day</span><strong>{bytes(life.best_day)}</strong></div>
         <div class="cell"><span class="muted">This week</span><strong>{bytes(smooth?.freedWeek ?? 0)}</strong></div>
@@ -123,12 +132,12 @@
       </div>
 
       {#if kinds.length}
-        <h2 class="section" in:pour={{ delay: 180 }}>What it closed</h2>
+        <h2 class="section">What it closed</h2>
         <ul class="kinds">
           {#each kinds as k, i (k.label)}
-            <li in:pour={{ delay: 220 + i * 50 }}>
+            <li>
               <span class="k-label">{k.label}</span>
-              <span class="k-bar" aria-hidden="true"><i style:--w={k.n / most} style:animation-delay="{280 + i * 60}ms"></i></span>
+              <span class="k-bar" aria-hidden="true"><i style:--w={k.n / most} style:animation-delay="{60 + i * 25}ms"></i></span>
               <span class="k-n">{k.n}</span>
             </li>
           {/each}
@@ -136,6 +145,7 @@
       {/if}
     {/if}
   </div>
+  {/key}
 </section>
 
 <style>
@@ -143,17 +153,19 @@
     position: relative; /* above the panel texture */
     z-index: 1;
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
     min-height: 0;
     height: 100%;
+  }
+  /* The tab body swaps in place (same cell) when switching tabs. */
+  .stats {
+    grid-row: 3;
+    grid-column: 1;
   }
   .head {
     display: flex;
     align-items: center;
     padding: 14px var(--pad) 6px;
-  }
-  .view {
-    grid-template-rows: auto auto 1fr !important;
   }
   .tabs {
     display: flex;
@@ -370,7 +382,7 @@
     background: linear-gradient(90deg, var(--butter-hi), var(--butter));
     transform-origin: 0 50%;
     transform: scaleX(var(--w));
-    animation: k-pour 900ms var(--butter-ease) both;
+    animation: k-pour 600ms var(--butter-ease) both;
   }
   @keyframes k-pour {
     from {

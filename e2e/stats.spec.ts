@@ -72,3 +72,22 @@ test("stats lines stay on one line", async ({ page }) => {
   );
   for (const l of lines) expect(l.lines, l.text).toBeLessThanOrEqual(1);
 });
+
+test("stats opens in place: no drop-in from below, no re-count when switching tabs", async ({ page }) => {
+  await open(page);
+  const headTop = async () => (await page.getByRole("heading", { level: 1 }).boundingBox())!.y;
+  const mainTop = await headTop();
+  await page.getByRole("button", { name: "Stats" }).click();
+  // Mid-transition the new heading is already where it will rest.
+  await page.waitForTimeout(60);
+  const tops = await page.getByRole("heading", { level: 1 }).evaluateAll((els) => els.map((e) => e.getBoundingClientRect().top));
+  // Before the fix the new view started ~180 px lower; header paddings differ by ~5 px.
+  for (const t of tops) expect(Math.abs(t - mainTop)).toBeLessThan(8);
+  const num = page.locator(".hero .num");
+  await expect(num).toHaveText("41.2", { timeout: 2000 });
+  // Switching tabs doesn't replay the count from a low number.
+  await page.getByRole("tab", { name: "Fan" }).click();
+  await page.getByRole("tab", { name: "So far" }).click();
+  await page.waitForTimeout(40);
+  expect(Number(await num.textContent())).toBeGreaterThan(40);
+});

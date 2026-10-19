@@ -427,7 +427,7 @@
 
 <main class="panel" tabindex="-1" bind:this={panelEl} style:--warmth={warmth}>
   {#if view === "main"}
-    <section class="view" aria-label="Butters" in:pour={{ y: -6 }} out:dissolve={{ duration: 220 }}>
+    <section class="view" aria-label="Butters" in:dissolve={{ duration: 220, blur: 3 }} out:dissolve={{ duration: 160, blur: 3 }}>
       <header class="head">
         <div class="status">
           <StatusPat level={scan?.level ?? 'smooth'} />
@@ -642,7 +642,7 @@
   {:else if view === "stats"}
     <StatsView {smooth} tab={statsTab} onBack={() => (view = "main")} />
   {:else}
-    <section class="view" aria-label="Settings" in:pour={{ y: -6 }} out:dissolve={{ duration: 220 }}>
+    <section class="view" aria-label="Settings" in:dissolve={{ duration: 220, blur: 3 }} out:dissolve={{ duration: 160, blur: 3 }}>
       <header class="head">
         <div class="status">
           <button class="ghost" type="button" aria-label="Back" title="Back" onclick={() => (view = "main")}><Icon name="back" /></button>
@@ -770,9 +770,14 @@
     transition: opacity 1.2s var(--butter-ease);
   }
   /* Content sits above the texture; overlays keep their own positioning. */
-  .view {
+  /* Every view sits in the same grid cell, so switching views cross-fades
+     in place instead of stacking the new one below the leaving one. */
+  .view,
+  .panel > :global(.view) {
     position: relative;
     z-index: 1;
+    grid-area: 1 / 1;
+    min-height: 0;
   }
 
   /* Physics melt: drops and the footer puddle */

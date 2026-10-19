@@ -47,6 +47,20 @@ test.describe("docker deep dive", () => {
   });
 });
 
+test("old image versions: one row, shows disk and which images", async ({ page }) => {
+  await open(page, {
+    services: [{
+      id: "k3", key: "docker:old-images", kind: "docker_disk", title: "Old image versions ×14",
+      detail: "postgres:15.8.1.099, postgres:17.6.1.127, storage-api:v1.54.0", reason: "Newer version kept, none in use",
+      note: null, memory: 0, cpu: 0, ports: [], recommended: false, polite: true, verb: "Clear", disk: 14.02e9,
+    }],
+  });
+  const row = page.locator(".row", { hasText: "Old image versions ×14" });
+  await expect(row).toContainText("Newer version kept, none in use");
+  await expect(row.locator(".mem")).toHaveText("13.1 GB disk");
+  await expect(page.getByRole("checkbox", { name: /Old image versions/ })).not.toBeChecked();
+});
+
 test("leak watch: a steadily growing process says how much it grew", async ({ page }) => {
   await open(page, {
     suggestions: [{

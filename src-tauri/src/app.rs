@@ -67,10 +67,11 @@ enum Target {
     DockerDisk { key: String, which: DiskWhich },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum DiskWhich {
     BuildCache,
     DanglingImages,
+    OldImages(Vec<String>),
 }
 
 impl Target {
@@ -479,11 +480,28 @@ fn do_scan_services(state: &AppState) -> ServicesResult {
     }
     // Disk Docker can give back without touching anything you use.
     if let Some(d) = disk {
+        let cache_reason = match d.build_cache_idle {
+            Some(secs) if secs >= DAY => format!("Unused {}, rebuilds if needed", fmt_duration(secs)),
+            _ => "Rebuilds when needed".to_string(),
+        };
+        let old_count = d.old_images.len();
+        let old_bytes: u64 = d.old_images.iter().map(|i| i.size).sum();
+        let old_refs: Vec<String> = d.old_images.iter().map(|i| i.reference.clone()).collect();
+        let old_detail = d.old_images.iter().map(|i| i.reference.rsplit('/').next().unwrap_or(&i.reference).to_string()).collect::<Vec<_>>().join(", ");
         let items = [
-            (DiskWhich::BuildCache, "docker:build-cache", "Docker build cache", "Over 3 days old, rebuilds if needed", d.build_cache, GB_U),
-            (DiskWhich::DanglingImages, "docker:dangling", "Untagged Docker images", "Left over from rebuilds", d.dangling_images, 500 * MB),
+            (DiskWhich::BuildCache, "docker:build-cache", "Docker build cache".to_string(), cache_reason, None, d.build_cache, GB_U),
+            (DiskWhich::DanglingImages, "docker:dangling", "Untagged Docker images".to_string(), "Left over from rebuilds".to_string(), None, d.dangling_images, 500 * MB),
+            (
+                DiskWhich::OldImages(old_refs),
+                "docker:old-images",
+                format!("Old image versions ×{old_count}"),
+                "Newer version kept, none in use".to_string(),
+                Some(old_detail),
+                old_bytes,
+                GB_U,
+            ),
         ];
-        for (i, (which, key, title, reason, bytes, min)) in items.into_iter().enumerate() {
+        for (i, (which, key, title, reason, detail, bytes, min)) in items.into_iter().enumerate() {
             if bytes < min || ignored.iter().any(|k| k == key) {
                 continue;
             }
@@ -492,9 +510,9 @@ fn do_scan_services(state: &AppState) -> ServicesResult {
                 id: id.clone(),
                 key: key.to_string(),
                 kind: Kind::DockerDisk,
-                title: title.to_string(),
-                detail: None,
-                reason: reason.to_string(),
+                title,
+                detail,
+                reason,
                 note: None,
                 memory: 0,
                 cpu: 0.0,
@@ -688,6 +706,7 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
                 let r = match which {
                     DiskWhich::BuildCache => services::docker_prune_build_cache(),
                     DiskWhich::DanglingImages => services::docker_prune_dangling_images(),
+                    DiskWhich::OldImages(refs) => services::docker_remove_old_images(refs).map(|(_, bytes)| bytes),
                 };
                 match r {
                     Ok(bytes) => Outcome::Closed { message: format!("Cleared {}", fmt_bytes(bytes)), freed: 0, disk: bytes },
