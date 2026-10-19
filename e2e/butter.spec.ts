@@ -106,6 +106,11 @@ test("toast mode: nothing to close and smooth -> toast gets buttered", async ({ 
   await open(page, { suggestions: [] });
   await expect(page.locator(".toast-mode")).toBeVisible();
   await expect(page.getByText("All buttered up")).toBeVisible();
+  // Left-aligned with the section heading, like every other row.
+  // Compare the toaster to where the heading's text starts (inside its padding).
+  const toastLeft = (await page.locator(".toast-mode svg").boundingBox())!.x;
+  const textLeft = await page.locator("h2.section").evaluate((el) => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft));
+  expect(Math.abs(toastLeft - textLeft)).toBeLessThan(3);
   await expect.poll(async () => (await fake(page)).sounds.filter((s) => s === "open").length, { timeout: 3000 }).toBe(2);
 });
 

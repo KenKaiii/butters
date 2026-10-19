@@ -13,8 +13,9 @@
   });
 </script>
 
+<!-- Laid out like a list row (left-aligned, same inset as the rows). -->
 <div class="toast-mode" in:pour={{ delay: 120 }}>
-  <svg viewBox="0 0 120 92" width="120" height="92" aria-hidden="true">
+  <svg viewBox="22 0 84 86" width="44" height="45" aria-hidden="true">
     <!-- the slice of toast (behind the toaster front) -->
     <g class="slice">
       <path class="crust" d="M38 46 V20 Q38 8 50 8 H70 Q82 8 82 20 V46 Z" />
@@ -38,19 +39,25 @@
 
 <style>
   .toast-mode {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
     align-items: center;
-    gap: 6px;
-    padding: 18px 0 6px;
+    column-gap: 12px;
+    padding: 8px var(--inset);
   }
+
   svg {
     overflow: visible;
   }
   .line {
     margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 13px;
     font-weight: 600;
+    letter-spacing: -0.015em;
     color: var(--ink);
   }
   * {
