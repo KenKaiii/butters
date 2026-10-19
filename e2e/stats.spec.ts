@@ -78,11 +78,16 @@ test("stats opens in place: no drop-in from below, no re-count when switching ta
   const headTop = async () => (await page.getByRole("heading", { level: 1 }).boundingBox())!.y;
   const mainTop = await headTop();
   await page.getByRole("button", { name: "Stats" }).click();
-  // Mid-transition the new heading is already where it will rest.
-  await page.waitForTimeout(60);
-  const tops = await page.getByRole("heading", { level: 1 }).evaluateAll((els) => els.map((e) => e.getBoundingClientRect().top));
-  // Before the fix the new view started ~180 px lower; header paddings differ by ~5 px.
-  for (const t of tops) expect(Math.abs(t - mainTop)).toBeLessThan(8);
+  // While it fades in, the Stats heading never sits below where it rests
+  // (before the fix it started ~180 px lower). Sampled across the transition.
+  const heading = page.getByRole("heading", { name: "Butters so far" });
+  await heading.waitFor();
+  const samples: number[] = [];
+  for (let i = 0; i < 8; i++) {
+    samples.push((await heading.boundingBox())!.y);
+    await page.waitForTimeout(30);
+  }
+  for (const y of samples) expect(Math.abs(y - mainTop)).toBeLessThan(8);
   const num = page.locator(".hero .num");
   await expect(num).toHaveText("41.2", { timeout: 2000 });
   // Switching tabs doesn't replay the count from a low number.

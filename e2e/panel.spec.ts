@@ -217,11 +217,17 @@ test.describe("protected and leaving", () => {
     await page.evaluate(() => (window as any).__buttersLeave());
     const panel = page.locator(".panel");
     await expect(panel).toHaveCSS("animation-name", /panel-melt$/);
-    await page.waitForTimeout(90);
-    const mid = await panel.evaluate((el) => getComputedStyle(el).opacity);
-    expect(Number(mid)).toBeGreaterThan(0.05); // still visible mid-melt, not blinked out
-    await page.waitForTimeout(300);
-    expect(Number(await panel.evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(0.05);
+    // Freeze the melt at its midpoint (timing-independent, so slow CI runners
+    // can't skip past it): the panel must still be visible there, not cut.
+    const at = (t: number) =>
+      panel.evaluate((el, ms) => {
+        const a = el.getAnimations().find((x) => (x as CSSAnimation).animationName?.endsWith("panel-melt"))!;
+        a.pause();
+        a.currentTime = ms;
+        return Number(getComputedStyle(el).opacity);
+      }, t);
+    expect(await at(130)).toBeGreaterThan(0.3); // halfway through the 260 ms melt
+    expect(await at(259)).toBeLessThan(0.05); // and gone by the end
   });
 });
 
