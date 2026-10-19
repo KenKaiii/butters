@@ -20,8 +20,24 @@ test("memory is a butter stick that melts as RAM fills", async ({ page }) => {
   const s = await scale();
   expect(s).toBeGreaterThan(0.06);
   expect(s).toBeLessThan(0.5); // ~18 of 24 GB used -> about a quarter of the stick left
-  await expect(page.getByRole("meter", { name: "CPU in use" })).toBeVisible();
-  await expect(page.locator(".pan .pat")).toHaveCount(1);
+});
+
+test("CPU is sizzling butter: the fill is the value, bubbles only inside it", async ({ page }) => {
+  await open(page);
+  const meter = page.getByRole("meter", { name: "CPU in use" });
+  await expect(meter).toBeVisible();
+  // Nothing on the bar looks like a draggable handle.
+  await expect(meter.locator(".pat")).toHaveCount(0);
+  await page.waitForTimeout(1200);
+  const pct = Number(await meter.getAttribute("aria-valuenow"));
+  expect(pct).toBeGreaterThan(20);
+  // Fill length matches the number.
+  const fill = await meter.locator(".fill").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--cpu")));
+  expect(Math.abs(fill * 100 - pct)).toBeLessThan(3);
+  // Every sizzling bubble sits inside the filled part.
+  const bubbles = await meter.locator(".bubble.on").evaluateAll((els) => els.map((e) => parseFloat((e as HTMLElement).style.left)));
+  expect(bubbles.length).toBeGreaterThan(0);
+  for (const at of bubbles) expect(at).toBeLessThan(pct);
 });
 
 test("closing drops butter into the footer puddle", async ({ page }) => {

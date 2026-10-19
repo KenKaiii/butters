@@ -1,7 +1,8 @@
 <script lang="ts">
   // Memory as a stick of butter that melts as RAM fills: the stick shortens,
   // a puddle spreads beneath it, drips start when it's tight.
-  // CPU as a pat warming in a pan: it softens and shimmers as load rises.
+  // CPU as butter sizzling in a pan: the fill is the value, bubbles rise and
+  // pop in it, faster as load climbs.
   // SVG + transform/opacity only; numbers are tweened by the parent.
   import { bytes } from "./format";
 
@@ -23,7 +24,17 @@
   // Free memory = the stick that's left. 100% used -> fully melted.
   const left = $derived(Math.max(0.06, 1 - memPct / 100));
   const cpuPct = $derived(Math.min(100, Math.max(0, cpu)));
-  const heat = $derived(cpuPct / 100);
+  // Bubbles sit along the pan; each one only sizzles once the melted butter
+  // (the CPU fill) has reached it, so they never appear past the value.
+  const BUBBLES = [
+    { at: 6, delay: 0, size: 3 },
+    { at: 19, delay: 0.7, size: 4 },
+    { at: 32, delay: 0.3, size: 3 },
+    { at: 45, delay: 1.1, size: 4 },
+    { at: 58, delay: 0.5, size: 3 },
+    { at: 71, delay: 0.9, size: 4 },
+    { at: 84, delay: 0.2, size: 3 },
+  ];
 </script>
 
 <div class="gauges">
@@ -49,22 +60,15 @@
 
   <div class="gauge" role="meter" aria-label="CPU in use" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(cpuPct)}>
     <div class="label"><span>CPU</span><span class="num">{Math.round(cpuPct)}%</span></div>
-    <svg class="pan state-{cpuState}" viewBox="0 0 160 26" preserveAspectRatio="none" aria-hidden="true" style:--heat={heat}>
-      <!-- the pan's heat: a warm glow that fills with load -->
-      <rect class="pan-base" x="0" y="18" width="160" height="6" rx="3" />
-      <rect class="pan-heat" x="0" y="18" width="160" height="6" rx="3" style:transform="scaleX({cpuPct / 100})" />
-      <!-- a pat sliding across as it heats, softening on the way -->
-      <g class="pat" style:transform="translateX({(cpuPct / 100) * 132}px)">
-        <rect class="pat-body" x="0" y="7" width="26" height="11" rx="3" style:transform="scale({1 + heat * 0.18}, {1 - heat * 0.32})" />
-        <rect class="pat-top" x="2" y="7" width="22" height="3.5" rx="1.75" style:transform="scale({1 + heat * 0.18}, {1 - heat * 0.32})" />
-      </g>
-      <!-- shimmer lines when it's working hard -->
-      <g class="shimmer">
-        <path d="M60 4 q3 -3 6 0 t6 0" />
-        <path d="M90 6 q3 -3 6 0 t6 0" />
-        <path d="M120 3 q3 -3 6 0 t6 0" />
-      </g>
-    </svg>
+    <!-- Butter sizzling in a pan: the fill is melted butter (its length is
+         the CPU use), bubbles rise and pop in it, faster as load climbs.
+         Nothing slides or looks draggable; the bar alone carries the value. -->
+    <div class="pan state-{cpuState}" aria-hidden="true">
+      <span class="fill" style:--cpu={cpuPct / 100}></span>
+      {#each BUBBLES as b (b.at)}
+        <i class="bubble" class:on={cpuPct >= b.at + 4} style:left="{b.at}%" style:--s="{b.size}px" style:animation-delay="{b.delay}s"></i>
+      {/each}
+    </div>
   </div>
 </div>
 
@@ -155,46 +159,75 @@
     animation: none;
   }
 
-  /* cpu pan */
-  .pan-base {
-    fill: var(--track);
+  /* cpu: sizzling butter. Same footprint as the memory dish (5 px tall,
+     1 px from the bottom of a 26 px row) so the two gauges line up. */
+  .pan {
+    position: relative;
+    height: 26px;
+    margin-top: 2px;
   }
-  .pan-heat {
-    fill: var(--butter);
-    opacity: 0.6;
-    transform-origin: 0 50%;
+  .pan::before,
+  .fill {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 1px;
+    height: 5px;
+    border-radius: 2.5px;
   }
-  .pan.state-bad .pan-heat {
-    fill: #e2a44a;
-    opacity: 0.85;
+  .pan::before {
+    background: var(--track);
   }
-  .pat-body {
-    fill: var(--butter);
-    transform-origin: 50% 100%;
+  .fill {
+    background: linear-gradient(var(--butter-hi), var(--butter));
+    /* clip instead of scale, so the rounded end stays round at any length */
+    clip-path: inset(0 calc((1 - var(--cpu, 0)) * 100%) 0 0 round 2.5px);
   }
-  .pat-top {
-    fill: var(--butter-hi);
-    transform-origin: 50% 300%;
+  .pan.state-warn .fill {
+    background: linear-gradient(var(--butter), #e2b04c);
   }
-  .pan.state-bad .pat-body {
-    fill: #e8b453;
+  .pan.state-bad .fill {
+    /* browning butter when the CPU is pinned */
+    background: linear-gradient(#efc76a, #d4923a);
   }
-  .shimmer path {
-    fill: none;
-    stroke: var(--butter-deep);
-    stroke-width: 1.2;
-    stroke-linecap: round;
+  .bubble {
+    position: absolute;
+    bottom: 2px;
+    width: var(--s);
+    height: var(--s);
+    margin-left: calc(var(--s) / -2);
+    border-radius: 50%;
+    background: rgba(255, 250, 235, 0.6);
+    box-shadow: inset 0 0 0 1px var(--butter-deep);
     opacity: 0;
+    --dur: 2.6s;
   }
-  .pan.state-warn .shimmer path,
-  .pan.state-bad .shimmer path {
-    animation: g-shimmer 1.8s ease-in-out infinite;
+  .pan.state-warn .bubble {
+    --dur: 1.5s;
   }
-  .shimmer path:nth-child(2) {
-    animation-delay: 0.5s !important;
+  .pan.state-bad .bubble {
+    --dur: 0.9s;
   }
-  .shimmer path:nth-child(3) {
-    animation-delay: 1s !important;
+  .bubble.on {
+    animation: sizzle var(--dur) ease-out infinite;
+  }
+  @keyframes sizzle {
+    0% {
+      transform: translateY(2px) scale(0.4);
+      opacity: 0;
+    }
+    25% {
+      opacity: 1;
+    }
+    80% {
+      transform: translateY(-8px) scale(1);
+      opacity: 0.9;
+    }
+    100% {
+      transform: translateY(-10px) scale(1.4);
+      opacity: 0;
+    }
   }
 
   @keyframes g-drip {
@@ -213,23 +246,12 @@
       opacity: 0;
     }
   }
-  @keyframes g-shimmer {
-    0% {
-      opacity: 0;
-      transform: translateY(2px);
-    }
-    40% {
-      opacity: 0.6;
-    }
-    100% {
-      opacity: 0;
-      transform: translateY(-4px);
-    }
-  }
   @media (prefers-reduced-motion: reduce) {
-    .drip,
-    .shimmer path {
+    .drip {
       animation: none !important;
+    }
+    .bubble {
+      display: none;
     }
   }
 </style>
