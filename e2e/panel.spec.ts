@@ -130,7 +130,7 @@ test.describe("closing things", () => {
 test.describe("live and status", () => {
   test("memory and CPU update on their own", async ({ page }) => {
     await open(page);
-    const mem = page.locator(".meter").first().locator(".num");
+    const mem = page.locator(".gauge").first().locator(".num");
     const first = await mem.textContent();
     await expect.poll(async () => mem.textContent(), { timeout: 6000 }).not.toBe(first);
   });
@@ -174,10 +174,16 @@ test.describe("permissions and updates", () => {
 
 test("nothing wraps: every row stays one line", async ({ page }) => {
   await open(page);
-  for (const el of await page.locator(".row .title, .row .meta, .bar-text").all()) {
-    const lines = await el.evaluate((n) => Math.round(n.getBoundingClientRect().height / parseFloat(getComputedStyle(n).lineHeight || "16")));
-    expect(lines).toBeLessThanOrEqual(1);
-  }
+  await expect(page.locator(".row .title").first()).toBeVisible();
+  // One snapshot of every line, so a live refresh can't swap elements mid-check.
+  const lines = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>(".row .title, .row .meta, .bar-text")].map((n) => ({
+      text: n.textContent?.trim() ?? "",
+      lines: Math.round(n.offsetHeight / parseFloat(getComputedStyle(n).lineHeight || "16")),
+    })),
+  );
+  expect(lines.length).toBeGreaterThan(3);
+  for (const l of lines) expect(l.lines, l.text).toBeLessThanOrEqual(1);
 });
 
 test.describe("protected and leaving", () => {

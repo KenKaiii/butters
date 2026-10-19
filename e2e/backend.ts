@@ -9,6 +9,8 @@ export interface FakeState {
   settings: { alerts: boolean; launch_at_login: boolean; sounds: boolean; ignored: string[] };
   notify: "ask" | "off" | "on";
   update: { current: string; available: string | null; checking: boolean; installing: boolean; error: string | null };
+  smoothness: { score: number | null; freedToday: number; freedWeek: number; week: number[] };
+  level: "smooth" | "busy" | "strained";
   /** Outcome per suggestion id for close_item (default: closed). */
   closeAs: Record<string, "closed" | "still_running" | "needs_force">;
 }
@@ -24,13 +26,15 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
     notify: "on",
     update: { current: "0.1.0", available: null, checking: false, installing: false, error: null },
     closeAs: {} as Record<string, string>,
+    smoothness: { score: 87, freedToday: 400 * MB, freedWeek: 3.2 * GB, week: [0, 1 * GB, 0, 512 * MB, 0, 1.3 * GB, 400 * MB] },
+    level: "smooth",
     ...init,
   };
   let memUsed = 18 * GB;
   let cpu = 30;
   const scan = {
     stats: { memUsed, memTotal: 24 * GB, swapUsed: 0, cpu, cores: 10, pressure: "normal", thermal: "nominal" },
-    level: "smooth",
+    level: state.level,
     suggestions: (init.suggestions as unknown[]) ?? [
       { id: "a", key: "dev:vite", kind: "dev_server", title: "Vite dev server", detail: "~/app · :5173", reason: "Terminal closed", note: null, memory: 400 * MB, cpu: 0, ports: [5173], recommended: true, polite: true, verb: "Stop" },
       { id: "b", key: "agent:claude", kind: "agent_session", title: "Claude Code session", detail: "~/api", reason: "Idle 3 h", note: null, memory: 600 * MB, cpu: 4, ports: [], recommended: true, polite: true, verb: "Stop" },
@@ -55,7 +59,7 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       cpu = cpu === 30 ? 42 : 30;
       scan.stats.memUsed = memUsed;
       scan.stats.cpu = cpu;
-      return { stats: copy(scan.stats), level: "smooth" };
+      return { stats: copy(scan.stats), level: state.level };
     },
     close_item: ({ id, force }) => {
       const pi = (scan.protected as any[]).findIndex((x) => x.id === id);
@@ -89,6 +93,7 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       return null;
     },
     notify_permission: () => state.notify,
+    smoothness: () => copy(state.smoothness),
     fix_notify_permission: () => {
       if (state.notify === "ask") state.notify = "on";
       return state.notify;

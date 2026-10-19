@@ -104,7 +104,9 @@ button {
 }
 
 @media (forced-colors: active) {
-  .meter-fill {
-    background: CanvasText !important;
+  svg rect,
+  svg path,
+  svg ellipse {
+    fill: CanvasText !important;
   }
 }

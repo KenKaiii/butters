@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { Tween } from "svelte/motion";
-  import { api, type Notify, type Outcome, type Protected, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
+  import { api, type Notify, type Outcome, type Protected, type Smoothness, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
   import { bytes } from "./lib/format";
   import Check from "./lib/Check.svelte";
   import Icon from "./lib/Icon.svelte";
@@ -10,6 +10,9 @@
   import { butterEase, dissolve, melt, ms, pour } from "./lib/motion";
   import Savings from "./lib/Savings.svelte";
   import StatusPat from "./lib/StatusPat.svelte";
+  import ButterGauges from "./lib/ButterGauges.svelte";
+  import Toast from "./lib/Toast.svelte";
+  import { dropFrom } from "./lib/drops";
 
   let scan = $state<ScanResult | null>(null);
   let services = $state<ServicesResult | null>(null);
@@ -36,6 +39,12 @@
   let update = $state<UpdateStatus | null>(null);
   // A protected app the user chose to close: first click arms, second confirms.
   let armedKey = $state<string | null>(null);
+  // Physics melt: drops fall into a footer puddle that holds this session's savings.
+  let dropLayer: HTMLDivElement | undefined = $state();
+  let puddleEl: HTMLSpanElement | undefined = $state();
+  let sessionFreed = $state(0);
+  let splash = $state(0);
+  let smooth = $state<Smoothness | null>(null);
   let notify = $state<Notify>("on");
   let updating = $state(false);
   // Rows pour in one after another only on the first fill.
@@ -107,9 +116,23 @@
   const sleep = (n: number) => new Promise((r) => setTimeout(r, n));
 
   /** Plays the melt on a closed row, then lets it leave the list. */
-  function meltAway(s: Suggestion) {
+  /** Drops fall from the melting row into the footer puddle. */
+  function pour_drops(key: string, freed: number) {
+    const row = document.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
+    if (!row || !dropLayer || !puddleEl) {
+      sessionFreed += freed;
+      return;
+    }
+    dropFrom(dropLayer, row.getBoundingClientRect(), puddleEl.getBoundingClientRect(), () => {
+      sessionFreed += freed;
+      splash++;
+    });
+  }
+
+  function meltAway(s: Suggestion, freed = s.memory) {
     melting[s.key] = true;
     api.sound("melt");
+    pour_drops(s.key, freed);
     setTimeout(() => {
       gone[s.key] = true;
       delete melting[s.key];
@@ -122,6 +145,7 @@
     const ports = closed.reduce((n, s) => n + s.ports.length, 0);
     savings = { freed, closed: closed.length, cpu, ports };
     api.sound("freed");
+    void loadSmoothness();
   }
 
   async function closeSelected() {
@@ -136,7 +160,7 @@
         closed.push(s);
         outs.push(out);
         delete overrides[s.key];
-        meltAway(s);
+        meltAway(s, out.freed);
       }
     }
     running = false;
@@ -152,7 +176,7 @@
   async function force(s: Suggestion) {
     const out = await closeOne(s, true);
     if (out.status === "closed") {
-      meltAway(s);
+      meltAway(s, out.freed);
       await sleep(ms(MELT_MS * 0.7));
       celebrate([s], [out]);
     } else {
@@ -176,6 +200,7 @@
     if (out.status === "closed") {
       melting[p.key] = true;
       api.sound("melt");
+      pour_drops(p.key, out.freed);
       setTimeout(() => {
         gone[p.key] = true;
         delete melting[p.key];
@@ -187,6 +212,22 @@
       say(out.message);
     }
     await refresh();
+  }
+
+  /** Knife gesture: slice one row off (polite close, like Close). */
+  async function slice(s: Suggestion) {
+    const out = await closeOne(s, false);
+    if (out.status === "closed") {
+      delete overrides[s.key];
+      meltAway(s, out.freed);
+      await sleep(ms(MELT_MS * 0.7));
+      celebrate([s], [out]);
+    }
+    await refresh();
+  }
+
+  async function loadSmoothness() {
+    smooth = await api.smoothness().catch(() => smooth);
   }
 
   async function checkUpdate() {
@@ -279,6 +320,7 @@
     panelEl.focus({ preventScroll: true });
     refresh();
     api.updateStatus().then((u) => (update = u)).catch(() => {});
+    void loadSmoothness();
     const timer = setInterval(() => {
       if (!running && !confirming && !savings && view === "main" && document.visibilityState === "visible") refresh();
     }, 15000);
@@ -302,12 +344,20 @@
         ? "Running warm"
         : null,
   );
+  // Texture warmth: 0 cool and calm, 1 when the machine is running hot.
+  const warmth = $derived(
+    scan?.stats.thermal === "serious" || scan?.stats.thermal === "critical" || scan?.level === "strained"
+      ? 1
+      : scan?.stats.thermal === "fair" || scan?.level === "busy"
+        ? 0.5
+        : 0,
+  );
   const footState = $derived(running ? "running" : confirming ? "confirm" : selected.length ? "ready" : "idle");
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<main class="panel" tabindex="-1" bind:this={panelEl}>
+<main class="panel" tabindex="-1" bind:this={panelEl} style:--warmth={warmth}>
   {#if view === "main"}
     <section class="view" aria-label="Butters" in:pour={{ y: -6 }} out:dissolve={{ duration: 220 }}>
       <header class="head">
@@ -328,21 +378,13 @@
       </header>
 
       <div class="meters" aria-label="System">
-        <div class="meter">
-          <div class="meter-label">
-            <span>Memory</span>
-            <span class="num">{scan ? `${bytes(memTween.current)} of ${bytes(scan.stats.memTotal)}` : "…"}</span>
-          </div>
-          <div class="meter-track" role="meter" aria-label="Memory used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(memPct)}>
-            <div class="meter-fill {memState}" style:transform="scaleX({Math.min(100, memPct) / 100})"></div>
-          </div>
-        </div>
-        <div class="meter">
-          <div class="meter-label"><span>CPU</span><span class="num">{scan ? `${Math.round(cpuPct)}%` : "…"}</span></div>
-          <div class="meter-track" role="meter" aria-label="CPU in use" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(cpuPct)}>
-            <div class="meter-fill {cpuState}" style:transform="scaleX({Math.min(100, cpuPct) / 100})"></div>
-          </div>
-        </div>
+        <ButterGauges
+          memUsed={scan ? memTween.current : 0}
+          memTotal={scan?.stats.memTotal ?? 0}
+          cpu={cpuPct}
+          {memState}
+          cpuState={cpuState as "ok" | "warn" | "bad"}
+        />
         {#if heat}<p class="heat" in:pour>{heat}</p>{/if}
       </div>
 
@@ -380,6 +422,7 @@
             <ul class="list">
               {#each items as s, i (s.key)}
                 <li
+                  data-key={s.key}
                   animate:flip={{ duration: ms(620), easing: butterEase }}
                   in:pour={{ delay: firstFill ? 80 + i * 55 : 0 }}
                   out:melt={{ duration: gone[s.key] ? 0 : 760 }}
@@ -396,11 +439,15 @@
                     }}
                     onIgnore={() => ignore(s)}
                     onForce={() => force(s)}
+                    onSlice={() => slice(s)}
                   />
                 </li>
               {/each}
             </ul>
           {:else}
+            {#if scan.level === "smooth" && !savings}
+              <Toast />
+            {/if}
             {#if scan.watchedSecs < 3600}<p class="empty-note muted" in:pour>Idle apps show after 1 h</p>{/if}
           {/if}
 
@@ -414,6 +461,7 @@
                 <ul in:pour={{ y: -4 }} out:dissolve={{ duration: 200 }}>
                   {#each scan.protected.filter((x) => !gone[x.key]) as p (p.key)}
                     <li
+                      data-key={p.key}
                       class:closable={!!p.id}
                       class:armed={armedKey === p.key}
                       class:melting={!!melting[p.key]}
@@ -445,6 +493,16 @@
       </div>
 
       <footer class="bar">
+        <!-- The session puddle: grows with what you've freed since opening Butters. -->
+        <span
+          class="session-puddle"
+          class:filled={sessionFreed > 0}
+          bind:this={puddleEl}
+          style:--fill={Math.min(1, Math.log10(1 + sessionFreed / (64 * 1024 * 1024)) / 1.6)}
+          title={sessionFreed ? `${bytes(sessionFreed)} freed this session` : undefined}
+        >
+          {#key splash}<i class="ripple"></i>{/key}
+        </span>
         {#key footState}
           <div class="bar-inner" in:dissolve={{ delay: 60 }} out:dissolve={{ duration: 160 }}>
             {#if footState === "running"}
@@ -459,7 +517,20 @@
               <p class="bar-text">Frees <strong>{bytes(freeTween.current)}</strong></p>
               <button class="btn primary" type="button" onclick={() => (confirming = true)}>Close {selected.length}</button>
             {:else}
-              <p class="bar-text muted">Tick to close</p>
+              {#if smooth && (smooth.score !== null || smooth.freedWeek > 0)}
+                <p class="bar-text smooth-line" title="Today's smoothness and this week's freed memory">
+                  {#if smooth.score !== null}<span>Buttery <strong>{smooth.score}</strong></span>{/if}
+                  {#if smooth.freedWeek > 0}<span class="muted">· {bytes(smooth.freedWeek)} this week</span>{/if}
+                </p>
+                <svg class="spark" viewBox="0 0 48 16" aria-hidden="true">
+                  {#each smooth.week as v, i (i)}
+                    {@const max = Math.max(1, ...smooth.week)}
+                    <rect x={i * 7} y={16 - Math.max(1.5, (v / max) * 16)} width="5" height={Math.max(1.5, (v / max) * 16)} rx="2" class:today={i === 6} />
+                  {/each}
+                </svg>
+              {:else}
+                <p class="bar-text muted">Tick to close</p>
+              {/if}
             {/if}
           </div>
         {/key}
@@ -543,6 +614,7 @@
       {#key toast}<p class="toast" in:pour={{ y: 8 }} out:melt={{ duration: 420 }}>{toast}</p>{/key}
     {/if}
   </div>
+  <div class="drop-layer" bind:this={dropLayer} aria-hidden="true"></div>
   <!-- Drips that run off the bottom edge when the panel melts away. -->
   <span class="panel-drips" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
 </main>
@@ -558,6 +630,108 @@
     animation: pour-in 560ms var(--butter-ease) both;
     transform-origin: 50% 0%;
   }
+  /* Texture: a fine paper grain (one static image, painted once) and a soft
+     butter sheen from the top-left. Both warm up as the machine heats. */
+  .panel::before,
+  .panel::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    z-index: 0;
+  }
+  .panel::before {
+    background-image: url("data:image/svg+xml;utf8,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='140'%20height='140'%3E%3Cfilter%20id='n'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='.9'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3CfeColorMatrix%20values='0%200%200%200%20.45%20%200%200%200%200%20.33%20%200%200%200%200%20.12%20%200%200%200%20.55%200'/%3E%3C/filter%3E%3Crect%20width='100%'%20height='100%'%20filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 140px 140px;
+    opacity: 0.07;
+    mix-blend-mode: multiply;
+  }
+  .panel::after {
+    background:
+      radial-gradient(120% 60% at 0% 0%, rgba(255, 236, 170, calc(0.32 + var(--warmth, 0) * 0.18)), transparent 60%),
+      radial-gradient(90% 50% at 100% 100%, rgba(232, 150, 60, calc(var(--warmth, 0) * 0.12)), transparent 70%);
+    transition: opacity 1.2s var(--butter-ease);
+  }
+  /* Content sits above the texture; overlays keep their own positioning. */
+  .view {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Physics melt: drops and the footer puddle */
+  .drop-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 4;
+    overflow: hidden;
+    border-radius: inherit;
+  }
+  .drop-layer :global(.drop) {
+    position: absolute;
+    left: 0;
+    top: 0;
+    border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+    background: radial-gradient(circle at 35% 30%, #fff5d6, var(--butter) 55%, var(--butter-deep));
+    will-change: transform, opacity;
+  }
+  .session-puddle {
+    position: absolute;
+    left: 50%;
+    top: -3px;
+    width: 220px;
+    height: 7px;
+    border-radius: 50%;
+    transform: translateX(-50%) scale(calc(0.2 + var(--fill, 0) * 0.8), calc(0.4 + var(--fill, 0) * 0.6));
+    background: radial-gradient(closest-side, var(--butter), rgba(239, 210, 127, 0));
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      transform 900ms var(--butter-ease),
+      opacity 600ms var(--butter-ease);
+  }
+  .session-puddle.filled {
+    opacity: 0.9;
+    pointer-events: auto;
+  }
+  .ripple {
+    position: absolute;
+    inset: -3px 30%;
+    border-radius: 50%;
+    border: 1.5px solid var(--butter-deep);
+    opacity: 0;
+    animation: ripple 700ms var(--butter-ease);
+  }
+  @keyframes ripple {
+    from {
+      opacity: 0.6;
+      transform: scale(0.4, 0.6);
+    }
+    to {
+      opacity: 0;
+      transform: scale(1.3, 1.6);
+    }
+  }
+  .smooth-line {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+  }
+  .spark {
+    width: 48px;
+    height: 16px;
+    flex: none;
+  }
+  .spark rect {
+    fill: var(--butter);
+    opacity: 0.55;
+  }
+  .spark rect.today {
+    fill: var(--butter-deep);
+    opacity: 1;
+  }
+
   /* The panel itself is only a focus anchor for Escape and Tab; it is not a control. */
   .panel:focus-visible {
     outline: 2px solid transparent;
@@ -745,39 +919,12 @@
 
   .meters {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px var(--gap);
-    padding: 0 var(--pad) 14px;
-  }
-  .meter-label {
-    display: flex;
-    justify-content: space-between;
-    font-size: 11.5px;
-    color: var(--muted);
-    margin-bottom: 6px;
+    gap: 6px;
+    padding: 0 var(--pad) 12px;
   }
   .num {
     color: var(--ink);
     font-weight: 500;
-  }
-  .meter-track {
-    height: 6px;
-    border-radius: 3px;
-    background: var(--track);
-    overflow: hidden;
-  }
-  .meter-fill {
-    height: 100%;
-    border-radius: 3px;
-    transform-origin: 0 50%;
-    background: linear-gradient(90deg, var(--butter-hi), var(--butter));
-    transition: background-color var(--t-slow) var(--butter-ease);
-  }
-  .meter-fill.warn {
-    background: var(--butter-deep);
-  }
-  .meter-fill.bad {
-    background: var(--danger-fill);
   }
   .heat {
     grid-column: 1 / -1;
@@ -977,6 +1124,7 @@
   }
 
   .bar {
+    position: relative;
     display: grid;
     min-height: 58px;
     padding: 12px var(--pad);
@@ -1136,11 +1284,6 @@
   .error {
     margin: 8px var(--inset);
     color: var(--danger);
-  }
-  .about {
-    padding: 12px var(--inset);
-    margin: 0;
-    font-size: 11.5px;
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -18,6 +18,7 @@ use crate::engine::model::{Group, Kind};
 use crate::platform;
 use crate::sampler::{self, Sampler, Stats};
 use crate::services;
+use crate::history::{self, History, Summary};
 use crate::settings::Settings;
 
 const MB: u64 = 1024 * 1024;
@@ -76,6 +77,8 @@ pub struct AppState {
     targets: Mutex<HashMap<String, Target>>,
     pub settings: Mutex<Settings>,
     pub settings_path: PathBuf,
+    pub history: Mutex<History>,
+    pub history_path: PathBuf,
     pub started: Instant,
     containers: Mutex<Option<usize>>,
     pub alerts: Mutex<AlertState>,
@@ -85,11 +88,14 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(settings_path: PathBuf) -> Self {
+        let history_path = History::path(settings_path.parent().unwrap_or(std::path::Path::new(".")));
         AppState {
             sampler: Mutex::new(Sampler::new()),
             front: Mutex::new(FrontTracker::new()),
             targets: Mutex::new(HashMap::new()),
             settings: Mutex::new(Settings::load(&settings_path)),
+            history: Mutex::new(History::load(&history_path)),
+            history_path,
             settings_path,
             started: Instant::now(),
             containers: Mutex::new(None),
@@ -419,6 +425,12 @@ fn blocking_err(e: impl std::fmt::Display) -> String {
     format!("Internal error: {e}")
 }
 
+/// Today's smoothness score and the week's freed memory.
+#[tauri::command]
+pub fn smoothness(state: State<'_, AppState>) -> Summary {
+    lock(&state.history).summary(history::today())
+}
+
 /// Live meters: called every couple of seconds while the panel is open.
 #[tauri::command]
 pub fn live_stats(state: State<'_, AppState>) -> LiveStats {
@@ -464,8 +476,11 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
                 Err(e) => Outcome::Failed { message: format!("Couldn't unload: {e}") },
             },
         };
-        if matches!(outcome, Outcome::Closed { .. }) {
+        if let Outcome::Closed { freed, .. } = &outcome {
             lock(&state.targets).remove(&id);
+            let mut h = lock(&state.history);
+            h.record_freed(history::today(), *freed);
+            let _ = h.save(&state.history_path);
         }
         outcome
     })
@@ -513,6 +528,8 @@ pub fn hide_panel(app: AppHandle) {
 
 #[tauri::command]
 pub fn quit_butters(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let _ = lock(&state.history).save(&state.history_path);
     app.exit(0);
 }
 
@@ -541,7 +558,16 @@ pub fn spawn_background(app: AppHandle) {
                     }
                     s.stats()
                 };
-                crate::panel::set_tray_level(&app, alerts::level(&stats), &stats);
+                let level = alerts::level(&stats);
+                crate::panel::set_tray_level(&app, level, &stats);
+                {
+                    let mut h = lock(&state.history);
+                    h.record_level(history::today(), level);
+                    // Write at most every ~10 minutes; closes save right away.
+                    if tick.is_multiple_of(200) {
+                        let _ = h.save(&state.history_path);
+                    }
+                }
                 let alert = lock(&state.alerts).check(&stats, Instant::now());
                 if let Some((_, msg)) = alert
                     && lock(&state.settings).alerts && !panel_open {

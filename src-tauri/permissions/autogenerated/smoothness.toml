@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-smoothness"
+description = "Enables the smoothness command without any pre-configured scope."
+commands.allow = ["smoothness"]
+
+[[permission]]
+identifier = "deny-smoothness"
+description = "Denies the smoothness command without any pre-configured scope."
+commands.deny = ["smoothness"]

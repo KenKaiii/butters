@@ -48,6 +48,17 @@ with longer drips (no alarm dot). In the panel, the status icon is a tiny animat
 slumps and drips when strained. CSS keyframes on transform/opacity only; still under reduced motion. Both drawn
 by `scripts/make_icons.py`; run `cargo tauri icon icons/app-icon.png -o icons` afterwards.
 
+## Butter features
+
+| Feature | What it does | Cost |
+|---|---|---|
+| Butter-stick gauge | Memory: the stick is what's free, the puddle on the dish is what's used; drips when tight. CPU: a pat slides across a warming pan, softens and shimmers under load | SVG transforms |
+| Physics melt | Closed rows drop butter beads that fall (gravity-timed), squash on landing and fill a footer puddle holding this session's savings | WAAPI, max 24 live, removed on land |
+| Butter knife | Swipe a row right to reveal a knife and "Slice?". Needs the click, so stray swipes close nothing; Escape or a click elsewhere disarms | Pointer events |
+| Smoothness score | "Buttery 87" (smooth minutes count fully, busy half) plus a 7-day freed sparkline. Stored locally in history.json, 14 days | One sample a minute |
+| Toast mode | Nothing to close and smooth: a slice pops from a toaster, a pat drops and melts across it. Once per opening | CSS keyframes |
+| Texture | Fine paper grain plus a butter sheen; warmer when busy, strained or hot | Static image + gradients |
+
 ## Checks
 
 - Contrast: every text/control pair on the cream theme measured at or above WCAG 2.2 AA

@@ -94,11 +94,19 @@ export interface UpdateStatus {
   error: string | null;
 }
 
+export interface Smoothness {
+  score: number | null;
+  freedToday: number;
+  freedWeek: number;
+  week: number[];
+}
+
 export type Sound = "open" | "tick" | "melt" | "freed" | "close";
 export type Notify = "ask" | "off" | "on";
 
 export const api = {
   scan: () => invoke<ScanResult>("scan"),
+  smoothness: () => invoke<Smoothness>("smoothness"),
   live: () => invoke<{ stats: Stats; level: Level }>("live_stats"),
   /** Fire and forget; the backend checks the Sounds setting. */
   sound: (name: Sound) => void invoke("play_sound", { name }).catch(() => {}),

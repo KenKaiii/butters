@@ -4,6 +4,7 @@ const COMMANDS: &[&str] = &[
     "scan",
     "scan_services",
     "live_stats",
+    "smoothness",
     "play_sound",
     "notify_permission",
     "fix_notify_permission",

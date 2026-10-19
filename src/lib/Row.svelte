@@ -14,6 +14,7 @@
     onToggle,
     onIgnore,
     onForce,
+    onSlice,
   }: {
     s: Suggestion;
     selected: boolean;
@@ -23,7 +24,89 @@
     onToggle: (on: boolean) => void;
     onIgnore: () => void;
     onForce: () => void;
+    /** Knife gesture: called after the user swipes and confirms "Slice". */
+    onSlice?: () => void;
   } = $props();
+
+  // Butter knife: drag the row sideways to slice it off. Past the threshold it
+  // stays open with a "Slice?" button (a confirm, so a stray trackpad swipe
+  // can never close anything); short of it, it springs back. Keyboard users
+  // have the checkbox + Close, so the gesture is never the only way.
+  const ARM = 0.32;
+  let rowEl: HTMLDivElement | undefined = $state();
+  let dx = $state(0);
+  let dragging = $state(false);
+  let armed = $state(false);
+  let start: { x: number; y: number; id: number } | null = null;
+  let suppressClick = false;
+
+  function width() {
+    return rowEl?.getBoundingClientRect().width ?? 340;
+  }
+  function down(e: PointerEvent) {
+    if (pending || melting || !onSlice || e.button !== 0) return;
+    if ((e.target as Element).closest("button, input")) return;
+    start = { x: e.clientX, y: e.clientY, id: e.pointerId };
+  }
+  function move(e: PointerEvent) {
+    if (!start || e.pointerId !== start.id) return;
+    const mx = e.clientX - start.x;
+    const my = e.clientY - start.y;
+    if (!dragging) {
+      if (Math.abs(mx) < 8 || Math.abs(mx) < Math.abs(my) * 1.5 || mx < 0) return;
+      dragging = true;
+      armed = false;
+      rowEl?.setPointerCapture(e.pointerId);
+    }
+    // A little resistance past the arm point, like dragging through cold butter.
+    const w = width();
+    const raw = Math.max(0, mx);
+    dx = raw < w * ARM ? raw : w * ARM + (raw - w * ARM) * 0.35;
+  }
+  function up(e: PointerEvent) {
+    if (!start || e.pointerId !== start.id) return;
+    start = null;
+    if (!dragging) return;
+    dragging = false;
+    suppressClick = true;
+    if (dx >= width() * ARM * 0.92) {
+      armed = true;
+      dx = width() * ARM;
+    } else {
+      armed = false;
+      dx = 0;
+    }
+  }
+  function swallow(e: MouseEvent) {
+    // The click after a drag must not tick the checkbox.
+    if (suppressClick) {
+      suppressClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }
+  export function disarm() {
+    armed = false;
+    dx = 0;
+  }
+  function slice() {
+    armed = false;
+    dx = 0;
+    onSlice?.();
+  }
+  $effect(() => {
+    if (!armed) return;
+    const off = (e: Event) => {
+      if (!rowEl?.parentElement?.contains(e.target as Node)) disarm();
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && (e.stopPropagation(), disarm());
+    document.addEventListener("pointerdown", off, true);
+    window.addEventListener("keydown", esc, true);
+    return () => {
+      document.removeEventListener("pointerdown", off, true);
+      window.removeEventListener("keydown", esc, true);
+    };
+  });
 
   let confirmForce = $state(false);
   const canForce = $derived(
@@ -37,8 +120,29 @@
   const aside = $derived(s.note ?? (!s.polite ? "Force close only" : s.detail));
 </script>
 
-<div class="pat" class:melting>
-<div class="row" class:picked={selected} class:pending aria-busy={pending}>
+<div class="pat" class:melting class:sliding={dragging || armed}>
+<!-- Revealed behind the row as it slides: the knife's cut. -->
+<div class="knife" aria-hidden={!armed} class:armed style:--reveal={Math.min(1, dx / (width() * ARM || 1))}>
+  <svg class="blade" viewBox="0 0 40 12" aria-hidden="true"><path d="M2 6 H26 L38 2 Q40 6 38 10 L26 6" /><rect x="0" y="4.5" width="12" height="3" rx="1.5" /></svg>
+  {#if armed}
+    <button class="btn small slice" type="button" onclick={slice} in:dissolve={{ duration: 200 }}>Slice?</button>
+  {/if}
+</div>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="row"
+  class:picked={selected}
+  class:pending
+  class:dragging
+  aria-busy={pending}
+  bind:this={rowEl}
+  style:transform={dx ? `translateX(${dx}px)` : undefined}
+  onpointerdown={down}
+  onpointermove={move}
+  onpointerup={up}
+  onpointercancel={up}
+  onclickcapture={swallow}
+>
   <Check id={inputId} checked={selected} disabled={pending} onchange={onToggle} />
   <label class="text" for={inputId} title={[s.title, s.reason, aside].filter(Boolean).join(" · ")}>
     <span class="title">{s.title}</span>
@@ -71,6 +175,66 @@
 <style>
   .pat {
     position: relative;
+  }
+  .row {
+    position: relative; /* above the knife */
+    touch-action: pan-y;
+  }
+  .row.dragging {
+    transition: none !important;
+    cursor: grabbing;
+  }
+  .sliding .row {
+    box-shadow: -8px 0 16px -10px rgba(74, 52, 16, 0.35);
+    background: var(--surface);
+    transition:
+      transform 420ms var(--butter-ease),
+      background-color var(--t-soft) var(--butter-ease);
+  }
+  .pat:not(.sliding) .row {
+    transition:
+      transform 420ms var(--butter-ease),
+      background-color var(--t-soft) var(--butter-ease),
+      opacity var(--t-soft) var(--butter-ease),
+      filter var(--t-soft) var(--butter-ease);
+  }
+  /* The knife lives behind the row's left edge and shows as it slides. */
+  .knife {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-inline-start: 10px;
+    border-radius: var(--r-pat);
+    background: linear-gradient(90deg, var(--butter-hi), transparent 60%);
+    opacity: var(--reveal, 0);
+    pointer-events: none;
+  }
+  .knife.armed {
+    pointer-events: auto;
+  }
+  .blade {
+    width: 30px;
+    height: 10px;
+    flex: none;
+    transform: translateX(calc((1 - var(--reveal, 0)) * -12px));
+  }
+  .blade path {
+    fill: #d9d4c8;
+    stroke: #9a927f;
+    stroke-width: 0.6;
+  }
+  .blade rect {
+    fill: var(--butter-deep);
+  }
+  .btn.slice {
+    height: 26px;
+    padding: 0 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border-color: var(--butter-edge);
+    background: var(--surface);
   }
   .row {
     display: grid;

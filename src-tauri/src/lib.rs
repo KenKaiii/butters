@@ -2,6 +2,7 @@ pub mod actions;
 pub mod alerts;
 pub mod app;
 pub mod engine;
+pub mod history;
 pub mod panel;
 pub mod permissions;
 pub mod platform;
@@ -36,6 +37,7 @@ pub fn run() {
             app::scan,
             app::scan_services,
             app::live_stats,
+            app::smoothness,
             sound::play_sound,
             permissions::notify_permission,
             permissions::fix_notify_permission,
