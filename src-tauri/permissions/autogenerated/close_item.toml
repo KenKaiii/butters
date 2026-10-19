@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-item"
+description = "Enables the close_item command without any pre-configured scope."
+commands.allow = ["close_item"]
+
+[[permission]]
+identifier = "deny-close-item"
+description = "Denies the close_item command without any pre-configured scope."
+commands.deny = ["close_item"]

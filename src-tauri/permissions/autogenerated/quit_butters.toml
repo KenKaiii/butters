@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-quit-butters"
+description = "Enables the quit_butters command without any pre-configured scope."
+commands.allow = ["quit_butters"]
+
+[[permission]]
+identifier = "deny-quit-butters"
+description = "Denies the quit_butters command without any pre-configured scope."
+commands.deny = ["quit_butters"]

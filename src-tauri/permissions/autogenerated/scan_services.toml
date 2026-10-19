@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scan-services"
+description = "Enables the scan_services command without any pre-configured scope."
+commands.allow = ["scan_services"]
+
+[[permission]]
+identifier = "deny-scan-services"
+description = "Denies the scan_services command without any pre-configured scope."
+commands.deny = ["scan_services"]

@@ -1,0 +1,111 @@
+/* Butters: cream, not yellow. One theme only, in light and dark mode alike. Neutrals are warm milk and toast; butter
+   itself is saved for the one primary action, the meters and the status
+   drop. Motion is "melting": things soften (blur), settle downward and
+   slump as they leave, on one slow-settling curve. */
+@import "@fontsource-variable/sora/wght.css";
+
+:root {
+  /* Light: fresh butter on a cream plate */
+  --bg: #faf6ec;
+  --surface: #fffcf5;
+  --surface-soft: #f3ecdc;
+  --surface-picked: #f8efd6;
+  --ink: #2e2820;
+  --muted: #6b6152;
+  --hairline: #ebe1ce;
+  --control-line: #8f826c;
+  --butter-hi: #f8e6b0;
+  --butter: #efd27f;
+  --butter-deep: #c98f2c;
+  --butter-edge: rgba(150, 108, 24, 0.28);
+  --danger: #a3402b;
+  --danger-fill: #a3402b;
+  --danger-ink: #fffcf5;
+  --toast-bg: #2e2820;
+  --toast-ink: #faf6ec;
+  --track: #ece4d3;
+  --focus: #8a5d0c;
+  --shadow: 0 18px 40px -12px rgba(74, 52, 16, 0.28), 0 2px 8px rgba(74, 52, 16, 0.08);
+  --frame: rgba(74, 52, 16, 0.1);
+
+  --font: "Sora Variable", "Sora", -apple-system, "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --pad: 16px;
+  --inset: 8px;
+  --gap: 12px;
+  --r-panel: 16px;
+  --r-pat: 12px;
+  --r-control: 10px;
+  --control-h: 34px;
+
+  /* One curve for everything: quick to soften, long to settle. */
+  --butter-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --slump-ease: cubic-bezier(0.55, 0, 0.75, 0.2);
+  --t-quick: 180ms;
+  --t-soft: 380ms;
+  --t-slow: 900ms;
+  /* Always cream, whatever the system appearance. */
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 12.5px/1.5 var(--font);
+  letter-spacing: -0.005em;
+  font-feature-settings: "tnum";
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* macOS: the window is transparent so the panel can have soft corners and
+   its own shadow. Windows draws the frame itself. */
+html.floating,
+html.floating body {
+  background: transparent;
+}
+
+#app {
+  height: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  line-height: 1.25;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .meter-fill,
+  .drop {
+    background: CanvasText !important;
+  }
+}
