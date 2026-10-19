@@ -19,6 +19,7 @@ Checks:
   4. A leftover dev server is found, closed with Close -> Close, and its
      process is really gone.
   5. Clicking outside closes the panel and the window is destroyed.
+  6. The global shortcut (⌥⌘B) opens and closes the panel.
 """
 import json
 import os
@@ -47,6 +48,14 @@ ALERTS_Y, SOUNDS_Y = 94, 157
 def click(x, y):
     for kind in (Quartz.kCGEventMouseMoved, Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp):
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, Quartz.CGEventCreateMouseEvent(None, kind, (x, y), Quartz.kCGMouseButtonLeft))
+        time.sleep(0.05)
+
+
+def shortcut(flags, keycode):
+    for down in (True, False):
+        e = Quartz.CGEventCreateKeyboardEvent(None, keycode, down)
+        Quartz.CGEventSetFlags(e, flags)
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
         time.sleep(0.05)
 
 
@@ -167,6 +176,14 @@ def main():
         click(run.x - 200, run.y + 300)  # click outside: panel melts away
         wait(lambda: not windows_of(run.pid), what="panel to close when clicking away")
         results.append(("clicking away closes and destroys the panel", True))
+
+        # Global shortcut (⌥⌘B by default) opens the panel from anywhere, and closes it.
+        shortcut(Quartz.kCGEventFlagMaskAlternate | Quartz.kCGEventFlagMaskCommand, 11)  # keycode 11 = B
+        wait(lambda: windows_of(run.pid), what="⌥⌘B to open the panel")
+        time.sleep(0.8)
+        shortcut(Quartz.kCGEventFlagMaskAlternate | Quartz.kCGEventFlagMaskCommand, 11)
+        wait(lambda: not windows_of(run.pid), what="⌥⌘B again to close it")
+        results.append(("global shortcut opens and closes the panel", True))
 
         # Only the throwaway server can be suggested; it's a leftover, so pre-ticked.
         run.open_panel()
