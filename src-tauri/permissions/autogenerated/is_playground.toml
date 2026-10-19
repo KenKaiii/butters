@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-is-playground"
+description = "Enables the is_playground command without any pre-configured scope."
+commands.allow = ["is_playground"]
+
+[[permission]]
+identifier = "deny-is-playground"
+description = "Denies the is_playground command without any pre-configured scope."
+commands.deny = ["is_playground"]

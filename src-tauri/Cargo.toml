@@ -48,6 +48,11 @@ windows = { version = "0.62.2", features = [
   "Win32_Media_Audio",
 ] }
 
+[features]
+# Builds "Butters Playground": the same app, but it only sees throwaway test
+# processes it starts itself (src/playground.rs). Never part of real Butters.
+playground = []
+
 [dev-dependencies]
 
 # Small, fast release binary: https://tauri.app/concept/size/

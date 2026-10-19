@@ -269,3 +269,47 @@ test.describe("closing several at once", () => {
     expect(leftovers).toBe(0);
   });
 });
+
+test.describe("closing feels instant", () => {
+  const MB = 1024 ** 2;
+  const mk = (id: string, title: string) => ({
+    id, key: `k:${id}`, kind: "dev_server", title, detail: "~/x", reason: "Terminal closed", note: null,
+    memory: 200 * MB, cpu: 0, ports: [], recommended: true, polite: true, verb: "Stop", disk: 0,
+  });
+
+  test("rows warm the moment Close is pressed, and close in parallel", async ({ page }) => {
+    await open(page, { suggestions: [mk("a", "Vite"), mk("b", "Next"), mk("c", "Storybook")], sweep: [] } as any);
+    // Make every close take 600 ms, like a real app quitting.
+    await page.evaluate(() => {
+      const i = (window as any).__TAURI_INTERNALS__;
+      const o = i.invoke;
+      i.invoke = async (c: string, a: unknown) => {
+        if (c === "close_item") await new Promise((r) => setTimeout(r, 600));
+        return o(c, a);
+      };
+    });
+    await page.getByRole("button", { name: "Close 3" }).click();
+    const t0 = Date.now();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    // Instant feedback: all three rows are warm within a frame or two.
+    await expect(page.locator(".row.pending")).toHaveCount(3, { timeout: 150 });
+    // Parallel: all three are melting well before 3 × 600 ms.
+    await expect.poll(() => page.locator(".pat.melting").count(), { timeout: 1500 }).toBeGreaterThan(0);
+    expect(Date.now() - t0).toBeLessThan(1400);
+  });
+
+  test("no CSS blur filters on list rows (WebKit draws a magenta edge on them)", async ({ page }) => {
+    await open(page);
+    await page.getByRole("button", { name: "Close 2" }).click();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    for (let i = 0; i < 10; i++) {
+      const blurred = await page.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>(".list li, .list li *, .protected li, .protected li *")].filter((el) =>
+          /blur/.test(getComputedStyle(el).filter),
+        ).length,
+      );
+      expect(blurred).toBe(0);
+      await page.waitForTimeout(120);
+    }
+  });
+});

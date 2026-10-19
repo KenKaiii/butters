@@ -49,6 +49,21 @@
   // End-of-day sweep: the ids the backend says are safe to close together.
   let sweepIds = $state<string[]>([]);
   let notify = $state<Notify>("on");
+  // Butters Playground (a separate test build): a bar to reset its test processes.
+  let playground = $state<{ running: number; total: number; node: boolean } | null>(null);
+  let resetting = $state(false);
+  async function resetPlayground() {
+    resetting = true;
+    try {
+      playground = await api.playgroundReset();
+      await sleep(ms(600)); // let them start listening
+      await refresh();
+    } catch (e) {
+      say(String(e));
+    } finally {
+      resetting = false;
+    }
+  }
   let updating = $state(false);
   // Rows pour in one after another only on the first fill.
   let firstFill = $state(true);
@@ -148,6 +163,7 @@
   function startMelt(s: Suggestion) {
     meltingRows[s.key] = s;
     melting[s.key] = true;
+    pending[s.key] = false;
     api.sound("melt");
     pour_drops(s.key);
   }
@@ -166,15 +182,15 @@
     setTimeout(() => release([s.key]), ms(MELT_MS));
   }
 
-  /** Several rows melt one after another, a beat apart, then leave together. */
-  async function meltAll(rows: { s: Suggestion }[]) {
-    const STAGGER = 110;
-    for (const [i, r] of rows.entries()) {
-      if (i) await sleep(ms(STAGGER));
-      startMelt(r.s);
-    }
-    // When the last one has finished melting, all of them go at once.
-    setTimeout(() => release(rows.map((r) => r.s.key)), ms(MELT_MS));
+  /** Rows that finish together still melt a beat apart, never in one lump. */
+  let nextMeltAt = 0;
+  async function meltInTurn(s: Suggestion) {
+    pending[s.key] = true; // stays warm until its melt begins
+    const now = performance.now();
+    const at = Math.max(now, nextMeltAt);
+    nextMeltAt = at + ms(90);
+    if (at > now) await sleep(at - now);
+    meltAway(s);
   }
 
   function celebrate(closed: Suggestion[], outs: Outcome[]) {
@@ -206,18 +222,22 @@
     const batch = [...selected];
     const closed: Suggestion[] = [];
     const outs: Outcome[] = [];
-    // Close them all first (each row shows "Closing…"), then melt the ones
-    // that went, together, so the list doesn't reshuffle mid-animation.
-    for (const s of batch) {
-      const out = await closeOne(s, false);
-      if (out.status === "closed") {
-        closed.push(s);
-        outs.push(out);
-        delete overrides[s.key];
-      }
-    }
+    // Every chosen row warms the instant Close is pressed, all of them are
+    // closed at once (in parallel), and each melts the moment it's done: a
+    // quick dev server doesn't wait for an app that's still saving.
+    for (const s of batch) pending[s.key] = true;
+    await Promise.all(
+      batch.map(async (s) => {
+        const out = await closeOne(s, false);
+        if (out.status === "closed") {
+          closed.push(s);
+          outs.push(out);
+          delete overrides[s.key];
+          await meltInTurn(s);
+        }
+      }),
+    );
     if (closed.length) {
-      await meltAll(closed.map((s) => ({ s })));
       await sleep(ms(MELT_MS * 0.7));
       celebrate(closed, outs);
       // Footer stays on "Closing…" and the list isn't refreshed until the
@@ -398,6 +418,12 @@
     // Docker/Ollama results from the background check show at once, together
     // with everything else; a fresh check then updates them quietly.
     api.cachedServices().then((r) => r && !services && (services = r)).catch(() => {});
+    api
+      .isPlayground()
+      .then(async (yes) => {
+        if (yes) playground = await api.playgroundStatus();
+      })
+      .catch(() => {});
     api.sound("open");
     api.notifyPermission().then((n) => (notify = n)).catch(() => {});
     const live = setInterval(tickLive, 2000);
@@ -488,6 +514,13 @@
         {/if}
       </div>
 
+      {#if playground}
+        <div class="playground" in:pour={{ y: -4 }}>
+          <span class="pg-text">Playground · {playground.node ? `${playground.running} of ${playground.total} test items running` : "Needs Node.js"}</span>
+          <button class="btn small" type="button" onclick={resetPlayground} disabled={resetting || !playground.node}>{resetting ? "Resetting…" : "Reset"}</button>
+        </div>
+      {/if}
+
       {#if notify !== "on"}
         <div class="update" in:pour={{ y: -4 }} out:melt>
           <span class="update-text">{notify === "ask" ? "Turn on alerts" : "Alerts are off in Settings"}</span>
@@ -531,8 +564,8 @@
                 <li
                   data-key={s.key}
                   animate:flip={{ duration: ms(620), easing: butterEase }}
-                  in:pour={{ delay: firstFill ? 80 + i * 55 : 0 }}
-                  out:melt={{ duration: gone[s.key] ? 0 : 760 }}
+                  in:pour={{ delay: firstFill ? 80 + i * 55 : 0, blur: 0 }}
+                  out:melt={{ duration: gone[s.key] ? 0 : 760, blur: 0 }}
                 >
                   <Row
                     {s}
@@ -573,7 +606,7 @@
                       class:armed={armedKey === p.key}
                       class:melting={!!melting[p.key]}
                       animate:flip={{ duration: ms(620), easing: butterEase }}
-                      out:melt={{ duration: gone[p.key] ? 0 : 760 }}
+                      out:melt={{ duration: gone[p.key] ? 0 : 760, blur: 0 }}
                     >
                       <span class="p-title">{p.title}</span>
                       <span class="p-reason muted">{p.reason}</span>
@@ -582,7 +615,7 @@
                           <span class="num softening" in:dissolve>…</span>
                         {:else if armedKey === p.key}
                           <!-- Second step: it's protected for a reason, so confirm. -->
-                          <button class="btn small danger-soft" type="button" in:dissolve onclick={() => closeProtected(p)}>{p.verb}?</button>
+                          <button class="btn small danger-soft" type="button" in:dissolve={{ blur: 0 }} onclick={() => closeProtected(p)}>{p.verb}?</button>
                         {:else}
                           <span class="num p-mem">{bytes(p.memory)}</span>
                           {#if p.id}
@@ -1048,6 +1081,25 @@
     background: var(--butter-hi);
   }
 
+  .playground {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 var(--pad) 8px;
+    padding: 6px 6px 6px 12px;
+    border-radius: var(--r-pat);
+    background: repeating-linear-gradient(-45deg, var(--surface-soft) 0 8px, var(--surface-picked) 8px 16px);
+    color: var(--ink);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .pg-text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .select {
     height: 28px;
     padding: 0 28px 0 10px;
@@ -1191,31 +1243,33 @@
   .p-end > * {
     grid-area: 1 / 1;
   }
+  /* Opacity and a small slide only: no CSS filters inside the list (WebKit
+     draws stray magenta edges on blurred elements there). */
   .p-close {
     opacity: 0;
-    filter: blur(3px);
+    transform: translateX(4px);
     pointer-events: none;
     transition:
       opacity var(--t-quick) var(--butter-ease),
-      filter var(--t-quick) var(--butter-ease);
+      transform var(--t-quick) var(--butter-ease);
   }
   .p-mem {
     /* Only a label: clicks always reach the Close button underneath. */
     pointer-events: none;
     transition:
       opacity var(--t-quick) var(--butter-ease),
-      filter var(--t-quick) var(--butter-ease);
+      transform var(--t-quick) var(--butter-ease);
   }
   li.closable:hover .p-close,
   .p-close:focus-visible {
     opacity: 1;
-    filter: none;
+    transform: none;
     pointer-events: auto;
   }
   li.closable:hover .p-mem,
   li.closable:focus-within .p-mem {
     opacity: 0;
-    filter: blur(3px);
+    transform: translateX(-4px);
   }
   .protected li.melting {
     pointer-events: none;

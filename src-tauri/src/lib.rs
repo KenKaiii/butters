@@ -7,6 +7,8 @@ pub mod history;
 pub mod panel;
 pub mod permissions;
 pub mod platform;
+#[cfg(feature = "playground")]
+pub mod playground;
 pub mod sampler;
 pub mod services;
 pub mod settings;
@@ -15,6 +17,13 @@ pub mod sound;
 pub mod updates;
 
 use tauri::Manager;
+
+/// The Playground's test processes (Playground builds only).
+#[cfg(feature = "playground")]
+pub fn playground_state() -> &'static playground::Playground {
+    static P: std::sync::OnceLock<playground::Playground> = std::sync::OnceLock::new();
+    P.get_or_init(playground::Playground::default)
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -41,9 +50,18 @@ pub fn run() {
             app.manage(app::AppState::new(settings::Settings::path(&config_dir)));
             panel::setup_tray(app.handle())?;
             permissions::setup(app.handle());
+            // The Playground leaves the global shortcut to the real Butters.
+            #[cfg(not(feature = "playground"))]
             app::apply_shortcut(app.handle(), "");
             app::spawn_background(app.handle().clone());
+            // The Playground never updates itself or touches real processes;
+            // it starts its own set of test processes instead.
+            #[cfg(not(feature = "playground"))]
             updates::spawn_checks(app.handle().clone());
+            #[cfg(feature = "playground")]
+            std::thread::spawn(|| {
+                let _ = playground_state().reset();
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -67,13 +85,20 @@ pub fn run() {
             updates::update_status,
             updates::check_update,
             updates::install_update,
+            app::is_playground,
+            #[cfg(feature = "playground")]
+            app::playground_reset,
+            #[cfg(feature = "playground")]
+            app::playground_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Butters")
-        .run(|_app, event| {
+        .run(|_app, event| match event {
             // Closing the panel must not quit the app; only "Quit Butters" does.
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
-                api.prevent_exit();
-            }
+            tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+            // The Playground cleans up every test process it started.
+            #[cfg(feature = "playground")]
+            tauri::RunEvent::Exit => playground_state().stop_all(),
+            _ => {}
         });
 }

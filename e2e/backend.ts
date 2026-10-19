@@ -159,6 +159,7 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
     },
     hide_panel: () => null,
     hold_panel: () => null,
+    is_playground: () => false,
     quit_butters: () => null,
   };
 

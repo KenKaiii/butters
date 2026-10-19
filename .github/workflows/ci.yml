@@ -36,6 +36,8 @@ jobs:
       - run: pnpm build
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: src-tauri
+      - run: cargo clippy --all-targets --features playground -- -D warnings
+        working-directory: src-tauri
       - run: cargo test
         working-directory: src-tauri
 

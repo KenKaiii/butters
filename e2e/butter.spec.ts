@@ -40,18 +40,14 @@ test("CPU is sizzling butter: the fill is the value, bubbles only inside it", as
   for (const at of bubbles) expect(at).toBeLessThan(pct);
 });
 
-test("closing drops butter into the footer puddle", async ({ page }) => {
+test("closing drops butter that splashes and leaves nothing behind", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: "Close 2" }).click();
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect.poll(() => page.locator(".drop-layer .drop").count(), { timeout: 3000 }).toBeGreaterThan(0);
-  await expect(page.locator(".session-puddle")).toHaveClass(/filled/, { timeout: 4000 });
-  // Its Butters tooltip says what it holds.
-  await page.locator(".osd").waitFor({ state: "detached", timeout: 6000 });
-  await page.locator(".session-puddle").hover();
-  await expect(page.locator(".butter-tip.on")).toContainText("freed this session");
-  // Drops clean themselves up.
+  // Drops clean themselves up, and no puddle line is left on the footer.
   await expect.poll(() => page.locator(".drop-layer .drop").count(), { timeout: 4000 }).toBe(0);
+  await expect(page.locator(".session-puddle")).toHaveCount(0);
 });
 
 async function swipe(page: Page, title: string, fraction: number) {

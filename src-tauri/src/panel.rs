@@ -73,7 +73,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY)
         .icon(Image::from_bytes(TRAY_ICON)?)
         .icon_as_template(false)
-        .tooltip("Butters")
+        .tooltip(if cfg!(feature = "playground") { "Butters Playground" } else { "Butters" })
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -236,7 +236,8 @@ pub fn set_tray_level(app: &AppHandle, level: Level, stats: &Stats) {
         Level::Busy => "Getting busy",
         Level::Strained => "Under strain",
     };
-    let _ = tray.set_tooltip(Some(format!("Butters: {word}\n{}", crate::app::summary_line(stats))));
+    let name = if cfg!(feature = "playground") { "Butters Playground" } else { "Butters" };
+    let _ = tray.set_tooltip(Some(format!("{name}: {word}\n{}", crate::app::summary_line(stats))));
     let code = level as u8 + 1;
     if TRAY_LEVEL.swap(code, Ordering::Relaxed) != code {
         let bytes = if level == Level::Strained { TRAY_ICON_ALERT } else { TRAY_ICON };

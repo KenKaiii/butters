@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-playground-reset"
+description = "Enables the playground_reset command without any pre-configured scope."
+commands.allow = ["playground_reset"]
+
+[[permission]]
+identifier = "deny-playground-reset"
+description = "Denies the playground_reset command without any pre-configured scope."
+commands.deny = ["playground_reset"]

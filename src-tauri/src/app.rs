@@ -228,6 +228,8 @@ fn do_scan(state: &AppState) -> ScanResult {
             p.growth = t.growth_of(p.pid, p.start_time).map(|g| (g.bytes, g.secs));
         }
     }
+    #[cfg(feature = "playground")]
+    playground_view(&mut procs);
     let ctx = scan_context(state);
     let assessed = assess::assess(&procs, &ctx);
     let start_of: HashMap<u32, u64> = procs.iter().map(|p| (p.pid, p.start_time)).collect();
@@ -396,6 +398,40 @@ fn ports_text(ports: &[u16]) -> String {
     if more > 0 { format!("{} +{more}", shown.join(" ")) } else { shown.join(" ") }
 }
 
+/// Playground builds: keep only the Playground's own test processes (and
+/// their children), and age them so every rule shows its card right away
+/// (idle hours, a leak, an orphaned dev server) instead of after real time.
+#[cfg(feature = "playground")]
+fn playground_view(procs: &mut Vec<crate::engine::model::ProcInfo>) {
+    let ours = crate::playground_state().pids();
+    // Children of our processes count too (a node child of npm, etc.).
+    let mut keep: HashSet<u32> = ours.clone();
+    loop {
+        let before = keep.len();
+        for p in procs.iter() {
+            if p.parent.is_some_and(|pp| keep.contains(&pp)) {
+                keep.insert(p.pid);
+            }
+        }
+        if keep.len() == before {
+            break;
+        }
+    }
+    procs.retain(|p| keep.contains(&p.pid));
+    for p in procs.iter_mut() {
+        let cmd = p.cmd.join(" ");
+        if cmd.contains("leaky-worker") {
+            p.growth = Some((2_200 * 1024 * 1024, 40 * 60));
+            p.memory = p.memory.max(3 * 1024 * 1024 * 1024);
+        } else if cmd.contains("webpack") {
+            p.idle_secs = 0;
+        } else {
+            p.idle_secs = 3 * 60 * 60 + 10 * 60;
+            p.idle_is_lower_bound = false;
+        }
+    }
+}
+
 /// Debug builds only: `BUTTERS_E2E_ONLY_PID` limits suggestions to the one
 /// throwaway process an end-to-end test started, so a test can never close
 /// the developer's real work. Compiled out of release builds entirely.
@@ -439,7 +475,7 @@ fn do_scan_services(state: &AppState) -> ServicesResult {
     let mut containers = docker.join().ok().flatten();
     let mut disk = disk.join().ok().flatten();
     let mut models = ollama.join().ok().flatten();
-    if e2e_only_pid().is_some() {
+    if e2e_only_pid().is_some() || cfg!(feature = "playground") {
         containers = None;
         disk = None;
         models = None;
@@ -751,6 +787,24 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settin
         apply_shortcut(&app, &old_shortcut);
     }
     Ok(saved)
+}
+
+#[cfg(feature = "playground")]
+#[tauri::command]
+pub async fn playground_reset() -> Result<crate::playground::PlaygroundStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| crate::playground_state().reset()).await.map_err(blocking_err)?
+}
+
+#[cfg(feature = "playground")]
+#[tauri::command]
+pub fn playground_status() -> crate::playground::PlaygroundStatus {
+    crate::playground_state().status()
+}
+
+/// Is this the Playground build? (The panel shows its bar only then.)
+#[tauri::command]
+pub fn is_playground() -> bool {
+    cfg!(feature = "playground")
 }
 
 /// The panel asks to stay open while it closes things (see panel::hold).

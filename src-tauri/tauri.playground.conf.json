@@ -1,0 +1,12 @@
+{
+  "productName": "Butters Playground",
+  "identifier": "com.kenkai.butters.playground",
+  "bundle": {
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

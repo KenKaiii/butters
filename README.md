@@ -54,6 +54,22 @@ Measured on an M-series Mac (macOS 27), release build (before sounds and live me
 - Background work: one look at which app is in front every 3 s, and one light process sample a
   minute. A full scan takes about 0.6 s and only runs while the panel is open.
 
+## Playground (try it safely)
+
+`Butters Playground` is a separate test app with its own name, data and history. It starts
+seven real throwaway processes in `~/.butters-playground` (Vite, Next.js and Storybook dev
+servers left behind by a closed terminal, an idle Claude Code session, an MCP server, a busy
+webpack watch and a process that leaks memory) and sees **only those**. Your real apps are
+invisible to it. Close them as often as you like, then hit **Reset** to start them all again.
+Quitting the Playground stops whatever is left. Storybook takes 2.5 s to quit on purpose, like
+an app that saves first.
+
+```sh
+pnpm playground    # builds src-tauri/target/release/bundle/macos/Butters Playground.app
+```
+
+Needs Node.js. Never released or auto-updated; the real Butters doesn't contain any of it.
+
 ## Develop
 
 Needs Rust (stable), Node 22+ and pnpm.

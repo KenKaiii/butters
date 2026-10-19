@@ -138,7 +138,7 @@
 <div class="knife" aria-hidden={!armed} class:armed style:--reveal={Math.min(1, dx / (width() * ARM || 1))}>
   <svg class="blade" viewBox="0 0 40 12" aria-hidden="true"><path d="M2 6 H26 L38 2 Q40 6 38 10 L26 6" /><rect x="0" y="4.5" width="12" height="3" rx="1.5" /></svg>
   {#if armed}
-    <button class="btn small slice" type="button" onclick={slice} in:dissolve={{ duration: 200 }}>Slice?</button>
+    <button class="btn small slice" type="button" onclick={slice} in:dissolve={{ duration: 200, blur: 0 }}>Slice?</button>
   {/if}
 </div>
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -166,10 +166,8 @@
     <Icon name="eyeOff" />
   </button>
 
-  {#if pending}
-    <p class="result softening" role="status" in:dissolve>Closing…</p>
-  {:else if result && result.status !== "closed"}
-    <div class="result" role="status" in:pour={{ y: -4 }}>
+  {#if result && result.status !== "closed" && !pending}
+    <div class="result" role="status" in:pour={{ y: -4, blur: 0 }}>
       {#if canForce && confirmForce}
         <span class="msg warn">Unsaved work is lost</span>
         <button type="button" class="btn" onclick={() => (confirmForce = false)}>Cancel</button>
@@ -260,8 +258,7 @@
     color: var(--ink);
     transition:
       background-color var(--t-soft) var(--butter-ease),
-      opacity var(--t-soft) var(--butter-ease),
-      filter var(--t-soft) var(--butter-ease);
+      opacity var(--t-soft) var(--butter-ease);
   }
   .row:hover {
     background: var(--surface-soft);
@@ -271,10 +268,28 @@
     background: var(--surface-picked);
     color: var(--ink);
   }
-  /* While closing, the row starts to soften before it melts away. */
+  /* The instant you press Close, the row warms to butter and a soft sheen
+     passes over it while it closes. No CSS filters here: WebKit draws a
+     stray magenta edge on blurred rows inside the scrolling list. */
   .row.pending {
-    opacity: 0.7;
-    filter: blur(0.4px);
+    background: var(--butter-hi);
+    overflow: hidden;
+    transition: background-color 160ms var(--butter-ease);
+  }
+  .row.pending::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(100deg, transparent 30%, rgba(255, 251, 238, 0.65) 50%, transparent 70%);
+    transform: translateX(-100%);
+    animation: row-sheen 1100ms ease-in-out infinite;
+    pointer-events: none;
+  }
+  @keyframes row-sheen {
+    to {
+      transform: translateX(100%);
+    }
   }
   .text {
     display: flex;
@@ -345,9 +360,6 @@
     flex: 1;
     min-width: 0;
   }
-  .softening {
-    color: var(--muted);
-  }
   .warn {
     color: var(--danger);
   }
@@ -397,7 +409,7 @@
      as separate pats, never one slab. */
   @keyframes row-melt {
     0% {
-      background: var(--surface-picked);
+      background: var(--butter-hi); /* continues from the warm "closing" state */
       transform: none;
       opacity: 1;
     }
@@ -422,7 +434,6 @@
   @keyframes content-melt {
     to {
       opacity: 0;
-      filter: blur(5px);
       transform: translateY(8px) scaleY(0.7);
     }
   }
@@ -504,6 +515,9 @@
   @media (prefers-reduced-motion: reduce) {
     .melting .row {
       opacity: 0;
+    }
+    .row.pending::after {
+      animation: none;
     }
     .drips {
       display: none;

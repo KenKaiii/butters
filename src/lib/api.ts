@@ -145,6 +145,9 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
   hide: () => invoke<void>("hide_panel"),
+  isPlayground: () => invoke<boolean>("is_playground"),
+  playgroundReset: () => invoke<{ running: number; total: number; node: boolean }>("playground_reset"),
+  playgroundStatus: () => invoke<{ running: number; total: number; node: boolean }>("playground_status"),
   /** Keep the panel open while closing things (quitting an app moves focus). */
   hold: (on: boolean) => void invoke("hold_panel", { on }).catch(() => {}),
   quit: () => invoke<void>("quit_butters"),

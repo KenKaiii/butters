@@ -8,7 +8,8 @@
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "tauri": "tauri",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "playground": "tauri build --bundles app --features playground --config src-tauri/tauri.playground.conf.json --no-sign"
   },
   "dependencies": {
     "@fontsource-variable/sora": "5.3.0",
