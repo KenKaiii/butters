@@ -18,7 +18,6 @@ BUTTER_SIDE = (226, 178, 74)
 BUTTER_PUDDLE = (240, 200, 100)
 EDGE = (176, 128, 40)
 SHADOW = (150, 110, 40)
-ALERT = (214, 96, 70)
 
 
 def vgrad(size, top, bottom):
@@ -43,7 +42,7 @@ def poly_mask(size, pts):
     return m
 
 
-def pat_layers(s, ox=0.0, oy=0.0, k=1.0):
+def pat_layers(s, ox=0.0, oy=0.0, k=1.0, melt=0.0):
     """Masks for a butter pat in an s x s box: top, front, side faces plus puddle and drips.
     Coordinates are fractions of s, scaled by k around the centre and offset by (ox, oy)."""
 
@@ -58,21 +57,30 @@ def pat_layers(s, ox=0.0, oy=0.0, k=1.0):
     # Melt: drips down the front face and a puddle spreading underneath.
     drips = Image.new("L", size, 0)
     d = ImageDraw.Draw(drips)
-    for x, w, length in [(0.29, 0.065, 0.13), (0.45, 0.05, 0.075)]:
+    drips_spec = [(0.29, 0.065, 0.13), (0.45, 0.05, 0.075)]
+    if melt:
+        # melting: longer drips, a third one, and the pat runs into a wider puddle
+        drips_spec = [(0.27, 0.075, 0.13 + 0.12 * melt), (0.44, 0.06, 0.075 + 0.1 * melt), (0.55, 0.05, 0.05 + 0.08 * melt)]
+    for x, w, length in drips_spec:
         (x0, y0), (x1, y1) = P(x - w / 2, 0.58), P(x + w / 2, 0.62 + length)
         d.rounded_rectangle([x0, y0, x1, y1], radius=(x1 - x0) / 2, fill=255)
     puddle = Image.new("L", size, 0)
-    (px0, py0), (px1, py1) = P(0.13, 0.585), P(0.90, 0.74)
+    spread = 0.06 * melt
+    (px0, py0), (px1, py1) = P(0.13 - spread, 0.585), P(0.90 + spread, 0.74 + spread * 0.6)
     ImageDraw.Draw(puddle).ellipse([px0, py0, px1, py1], fill=255)
     return top, front, side, drips, puddle
 
 
-def draw_pat(base, s, ox=0.0, oy=0.0, k=1.0, round_r=None, outline=0.0, shine=True):
-    top, front, side, drips, puddle = pat_layers(s, ox, oy, k)
+BROWNED = dict(top=(246, 206, 120), front=(222, 154, 62), side=(190, 118, 40), puddle=(214, 140, 56))
+
+
+def draw_pat(base, s, ox=0.0, oy=0.0, k=1.0, round_r=None, outline=0.0, shine=True, melt=0.0, palette=None):
+    top, front, side, drips, puddle = pat_layers(s, ox, oy, k, melt)
+    pal = palette or {}
     r = round_r if round_r is not None else s * 0.018
     body = soften(ImageChops.lighter(ImageChops.lighter(top, front), side), r)
-    melt = soften(ImageChops.lighter(drips, puddle), r * 0.8)
-    whole = ImageChops.lighter(body, melt)
+    melt_mask = soften(ImageChops.lighter(drips, puddle), r * 0.8)
+    whole = ImageChops.lighter(body, melt_mask)
 
     # Soft contact shadow under the puddle.
     sh = whole.filter(ImageFilter.GaussianBlur(s * 0.03)).point(lambda v: int(v * 0.32))
@@ -84,11 +92,12 @@ def draw_pat(base, s, ox=0.0, oy=0.0, k=1.0, round_r=None, outline=0.0, shine=Tr
         ring = whole.filter(ImageFilter.MaxFilter(int(outline) * 2 + 1))
         base.paste(EDGE, (0, 0), ring)
 
-    base.paste(BUTTER_PUDDLE, (0, 0), melt)
-    base.paste(vgrad(base.size, BUTTER_FRONT, BUTTER_SIDE), (0, 0), ImageChops.multiply(side, body))
-    base.paste(vgrad(base.size, (250, 220, 130), BUTTER_FRONT), (0, 0), ImageChops.multiply(front, body))
-    base.paste(vgrad(base.size, BUTTER_TOP, (250, 224, 146)), (0, 0), ImageChops.multiply(top, body))
-    base.paste(vgrad(base.size, (250, 220, 130), BUTTER_FRONT), (0, 0), soften(drips, r * 0.8))
+    front_c = pal.get("front", BUTTER_FRONT)
+    base.paste(pal.get("puddle", BUTTER_PUDDLE), (0, 0), melt_mask)
+    base.paste(vgrad(base.size, front_c, pal.get("side", BUTTER_SIDE)), (0, 0), ImageChops.multiply(side, body))
+    base.paste(vgrad(base.size, pal.get("top", (250, 220, 130)), front_c), (0, 0), ImageChops.multiply(front, body))
+    base.paste(vgrad(base.size, pal.get("top", BUTTER_TOP), pal.get("top", (250, 224, 146))), (0, 0), ImageChops.multiply(top, body))
+    base.paste(vgrad(base.size, pal.get("top", (250, 220, 130)), front_c), (0, 0), soften(drips, r * 0.8))
 
     if shine:
         # A soft highlight on the top face and a gloss on the puddle.
@@ -129,25 +138,22 @@ def app_icon(path, size=1024):
 
 
 def tray_icon(path, px=44, alert=False):
+    """Menu bar / tray: the pat in colour. Under strain it's a melting,
+    browning pat with longer drips (no alarm dot); static, so it costs nothing."""
     S = px * 8
+    melt = 1.0 if alert else 0.0
     base = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     canvas = Image.new("RGB", (S, S), (0, 0, 0))
-    # Draw the pat on a black canvas, then use the pat's own mask as alpha.
-    top, front, side, drips, puddle = pat_layers(S, 0, 0.02, 1.18)
+    k, oy = (1.12, -0.01) if alert else (1.18, 0.02)
+    top, front, side, drips, puddle = pat_layers(S, 0, oy, k, melt)
     r = S * 0.03
     body = soften(ImageChops.lighter(ImageChops.lighter(top, front), side), r)
-    melt = soften(ImageChops.lighter(drips, puddle), r * 0.8)
-    whole = ImageChops.lighter(body, melt)
+    melt_mask = soften(ImageChops.lighter(drips, puddle), r * 0.8)
+    whole = ImageChops.lighter(body, melt_mask)
     ring = whole.filter(ImageFilter.MaxFilter(int(S * 0.035) * 2 + 1))
-    canvas.paste(EDGE, (0, 0), ring)
-    draw_pat(canvas, S, oy=0.02, k=1.18, round_r=r, shine=False)
+    canvas.paste((150, 86, 24) if alert else EDGE, (0, 0), ring)
+    draw_pat(canvas, S, oy=oy, k=k, round_r=r, shine=False, melt=melt, palette=BROWNED if alert else None)
     base.paste(canvas, (0, 0), ring)
-    if alert:
-        d = ImageDraw.Draw(base)
-        rr = S * 0.15
-        cx, cy = S * 0.82, S * 0.22
-        d.ellipse([cx - rr * 1.25, cy - rr * 1.25, cx + rr * 1.25, cy + rr * 1.25], fill=(0, 0, 0, 0))
-        d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=ALERT + (255,))
     base.resize((px, px), Image.LANCZOS).save(path)
 
 

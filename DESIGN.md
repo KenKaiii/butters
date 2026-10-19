@@ -31,7 +31,9 @@ Only opacity, filter and transform animate (`src/lib/motion.ts`).
 | Text/state swaps | Dissolve: blur + fade in place (footer, heading, views) |
 | Numbers | Glide to new values (900 ms) instead of jumping |
 | Checkbox / switch | Fills softly, tick draws itself, slight squish on press |
-| Status drop | A round pat when smooth; melts into a drip as strain rises |
+| Status pat | Firm with a passing shine; softens with a drip; slumps, browns and drips under strain |
+| Clicking away | The panel melts: content softens, it slumps and spreads, drips run off the bottom (520 ms) |
+| Protected row | Memory dissolves into a Close button on hover; closing melts the row |
 | Loading | Three cream pats with a slow sheen |
 
 Reduced motion: every transition and keyframe has a `prefers-reduced-motion` path (JS
@@ -40,7 +42,10 @@ transitions return zero duration; CSS durations drop to 0).
 ## Icons
 
 App icon: a melting butter pat with drips and a glossy puddle on a cream tile. Menu bar/tray:
-the same pat in colour (not a macOS template image), with a terracotta dot under strain. Both drawn
+the same pat in colour (not a macOS template image); under strain it becomes a browning, melting pat
+with longer drips (no alarm dot). In the panel, the status icon is a tiny animated SVG pat
+(`src/lib/StatusPat.svelte`): a shine glides across when smooth, one slow drip when busy, and it
+slumps and drips when strained. CSS keyframes on transform/opacity only; still under reduced motion. Both drawn
 by `scripts/make_icons.py`; run `cargo tauri icon icons/app-icon.png -o icons` afterwards.
 
 ## Checks

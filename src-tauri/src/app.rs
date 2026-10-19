@@ -129,6 +129,10 @@ pub struct Suggestion {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Protected {
+    /// Present only when the user may close it anyway (hover "Close").
+    id: Option<String>,
+    key: String,
+    verb: &'static str,
     title: String,
     kind: Kind,
     memory: u64,
@@ -180,6 +184,7 @@ fn do_scan(state: &AppState) -> ScanResult {
     let seq = state.seq.fetch_add(1, Ordering::Relaxed);
 
     let only = e2e_only_pid();
+    let mut protected_groups: Vec<(Group, assess::Protection)> = Vec::new();
     let mut picked: Vec<(Group, String, bool, Option<String>)> = Vec::new();
     let mut protected = Vec::new();
     for a in assessed {
@@ -198,7 +203,7 @@ fn do_scan(state: &AppState) -> ScanResult {
             }
             Verdict::Protected(p) => {
                 if g.memory >= 150 * MB || g.cpu >= 10.0 {
-                    protected.push(Protected { title: g.title, kind: g.kind, memory: g.memory, cpu: g.cpu, reason: p.text() });
+                    protected_groups.push((g, p));
                 }
             }
             Verdict::Quiet => {}
@@ -239,9 +244,32 @@ fn do_scan(state: &AppState) -> ScanResult {
             },
         );
     }
+    protected_groups.sort_by_key(|(g, _)| std::cmp::Reverse(g.memory));
+    protected_groups.truncate(12);
+    for (i, (g, p)) in protected_groups.into_iter().enumerate() {
+        let id = p.user_closable().then(|| format!("x{seq}-{i}"));
+        if let Some(id) = &id {
+            let members: Vec<(u32, u64)> = g.members.iter().filter_map(|m| start_of.get(m).map(|s| (*m, *s))).collect();
+            targets.insert(
+                id.clone(),
+                Target::Procs {
+                    key: g.key.clone(),
+                    target: ProcTarget { title: g.title.clone(), members, app_pid: g.app_pid, memory: g.memory },
+                },
+            );
+        }
+        protected.push(Protected {
+            id,
+            key: format!("{}#{}", g.key, g.root),
+            verb: if g.app_pid.is_some() { "Quit" } else { "Stop" },
+            title: g.title,
+            kind: g.kind,
+            memory: g.memory,
+            cpu: g.cpu,
+            reason: p.text(),
+        });
+    }
     suggestions.sort_by(|a, b| b.recommended.cmp(&a.recommended).then(weight(b).total_cmp(&weight(a))));
-    protected.sort_by_key(|p| std::cmp::Reverse(p.memory));
-    protected.truncate(12);
 
     // Keep the latest service targets; replace process ones.
     {

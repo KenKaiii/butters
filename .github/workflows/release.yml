@@ -66,6 +66,26 @@ jobs:
           releaseDraft: true
           args: --target ${{ matrix.target }}
 
+      # Tauri notarizes the .app inside the DMG; this notarizes and staples the
+      # DMG itself too, so a downloaded DMG opens with no Gatekeeper warning.
+      - name: Notarize and staple the DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          dmg=$(ls src-tauri/target/"$TARGET"/release/bundle/dmg/*.dmg)
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_PASSWORD" --wait
+          xcrun stapler staple "$dmg"
+          spctl -a -vv -t open --context context:primary-signature "$dmg"
+          gh release upload "$TAG" "$dmg" --clobber --repo "$GITHUB_REPOSITORY"
+
   publish:
     needs: build
     runs-on: ubuntu-latest

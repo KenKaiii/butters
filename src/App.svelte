@@ -2,13 +2,14 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { Tween } from "svelte/motion";
-  import { api, type Notify, type Outcome, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
+  import { api, type Notify, type Outcome, type Protected, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
   import { bytes } from "./lib/format";
   import Check from "./lib/Check.svelte";
   import Icon from "./lib/Icon.svelte";
   import Row from "./lib/Row.svelte";
   import { butterEase, dissolve, melt, ms, pour } from "./lib/motion";
   import Savings from "./lib/Savings.svelte";
+  import StatusPat from "./lib/StatusPat.svelte";
 
   let scan = $state<ScanResult | null>(null);
   let services = $state<ServicesResult | null>(null);
@@ -33,6 +34,8 @@
   // The big "you saved" moment after closing things.
   let savings = $state<{ freed: number; closed: number; cpu: number; ports: number } | null>(null);
   let update = $state<UpdateStatus | null>(null);
+  // A protected app the user chose to close: first click arms, second confirms.
+  let armedKey = $state<string | null>(null);
   let notify = $state<Notify>("on");
   let updating = $state(false);
   // Rows pour in one after another only on the first fill.
@@ -158,6 +161,34 @@
     await refresh();
   }
 
+  async function closeProtected(p: Protected) {
+    if (!p.id) return;
+    armedKey = null;
+    pending[p.key] = true;
+    let out: Outcome;
+    try {
+      out = await api.close(p.id, false);
+    } catch (e) {
+      out = { status: "failed", message: String(e) };
+    } finally {
+      pending[p.key] = false;
+    }
+    if (out.status === "closed") {
+      melting[p.key] = true;
+      api.sound("melt");
+      setTimeout(() => {
+        gone[p.key] = true;
+        delete melting[p.key];
+      }, ms(MELT_MS));
+      await sleep(ms(MELT_MS * 0.7));
+      savings = { freed: out.freed, closed: 1, cpu: p.cpu, ports: 0 };
+      api.sound("freed");
+    } else {
+      say(out.message);
+    }
+    await refresh();
+  }
+
   async function checkUpdate() {
     update = update ? { ...update, checking: true, error: null } : update;
     update = await api.checkUpdate().catch(() => update);
@@ -208,6 +239,7 @@
   function onKey(e: KeyboardEvent) {
     if (e.key !== "Escape") return;
     if (savings) savings = null;
+    else if (armedKey) armedKey = null;
     else if (confirming) confirming = false;
     else if (view === "settings") view = "main";
     else api.hide();
@@ -280,7 +312,7 @@
     <section class="view" aria-label="Butters" in:pour={{ y: -6 }} out:dissolve={{ duration: 220 }}>
       <header class="head">
         <div class="status">
-          <span class="drop level-{scan?.level ?? 'smooth'}" aria-hidden="true"></span>
+          <StatusPat level={scan?.level ?? 'smooth'} />
           {#key scan?.level ?? "checking"}
             <h1 in:dissolve>{scan ? levelText[scan.level] : "Checking…"}</h1>
           {/key}
@@ -380,11 +412,29 @@
               </button>
               {#if showProtected}
                 <ul in:pour={{ y: -4 }} out:dissolve={{ duration: 200 }}>
-                  {#each scan.protected as p (p.title + p.reason)}
-                    <li>
+                  {#each scan.protected.filter((x) => !gone[x.key]) as p (p.key)}
+                    <li
+                      class:closable={!!p.id}
+                      class:armed={armedKey === p.key}
+                      class:melting={!!melting[p.key]}
+                      animate:flip={{ duration: ms(620), easing: butterEase }}
+                      out:melt={{ duration: gone[p.key] ? 0 : 760 }}
+                    >
                       <span class="p-title">{p.title}</span>
                       <span class="p-reason muted">{p.reason}</span>
-                      <span class="num">{bytes(p.memory)}</span>
+                      <span class="p-end">
+                        {#if pending[p.key]}
+                          <span class="num softening" in:dissolve>…</span>
+                        {:else if armedKey === p.key}
+                          <!-- Second step: it's protected for a reason, so confirm. -->
+                          <button class="btn small danger-soft" type="button" in:dissolve onclick={() => closeProtected(p)}>{p.verb}?</button>
+                        {:else}
+                          <span class="num p-mem">{bytes(p.memory)}</span>
+                          {#if p.id}
+                            <button class="btn small p-close" type="button" aria-label={`Close ${p.title}`} onclick={() => (armedKey = p.key)}>Close</button>
+                          {/if}
+                        {/if}
+                      </span>
                     </li>
                   {/each}
                 </ul>
@@ -493,6 +543,8 @@
       {#key toast}<p class="toast" in:pour={{ y: 8 }} out:melt={{ duration: 420 }}>{toast}</p>{/key}
     {/if}
   </div>
+  <!-- Drips that run off the bottom edge when the panel melts away. -->
+  <span class="panel-drips" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
 </main>
 
 <style>
@@ -504,10 +556,6 @@
     color: var(--ink);
     overflow: hidden;
     animation: pour-in 560ms var(--butter-ease) both;
-    transition:
-      opacity 220ms var(--slump-ease),
-      filter 220ms var(--slump-ease),
-      transform 220ms var(--slump-ease);
     transform-origin: 50% 0%;
   }
   /* The panel itself is only a focus anchor for Escape and Tab; it is not a control. */
@@ -520,11 +568,100 @@
     border-radius: var(--r-panel);
     box-shadow: var(--shadow), 0 0 0 1px var(--frame);
   }
-  /* Closing the panel: it slumps and softens instead of blinking out. */
+  /* Clicking away: the panel melts. Its contents soften first, the whole
+     pat warms and slumps down from the top while it spreads a touch, drips
+     gather along the bottom edge, then it all softens away. 520 ms, matched
+     by LEAVE in panel.rs and the "close" sound. */
   :global(html.leaving) .panel {
+    animation: panel-melt 520ms cubic-bezier(0.45, 0, 0.7, 0.3) forwards;
+    transform-origin: 50% 0%;
+    overflow: visible;
+    pointer-events: none;
+  }
+  :global(html.leaving) .panel > :global(*:not(.panel-drips)) {
+    animation: panel-content-melt 300ms var(--butter-ease) forwards;
+  }
+  :global(html.leaving) .panel-drips {
+    opacity: 1;
+  }
+  :global(html.leaving) .panel-drips i {
+    animation: panel-drip 520ms cubic-bezier(0.5, 0, 0.6, 1) forwards;
+  }
+  @keyframes panel-melt {
+    0% {
+      transform: none;
+      filter: none;
+      opacity: 1;
+    }
+    30% {
+      transform: translateY(2px) scale(1.006, 0.985);
+      filter: saturate(1.05);
+      opacity: 1;
+    }
+    70% {
+      transform: translateY(14px) scale(1.03, 0.82);
+      filter: blur(2px);
+      opacity: 0.85;
+    }
+    100% {
+      transform: translateY(30px) scale(1.06, 0.55);
+      filter: blur(8px);
+      opacity: 0;
+    }
+  }
+  @keyframes panel-content-melt {
+    to {
+      opacity: 0;
+      filter: blur(5px);
+      transform: translateY(6px);
+    }
+  }
+  .panel-drips {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 0;
     opacity: 0;
-    filter: blur(6px);
-    transform: translateY(6px) scale(0.985, 0.96);
+    pointer-events: none;
+    z-index: 6;
+  }
+  .panel-drips i {
+    position: absolute;
+    top: -6px;
+    width: 9px;
+    height: 22px;
+    border-radius: 0 0 5px 5px;
+    background: linear-gradient(var(--surface), var(--butter-hi));
+    transform-origin: 50% 0;
+    transform: scaleY(0);
+  }
+  .panel-drips i:nth-child(1) {
+    left: 16%;
+  }
+  .panel-drips i:nth-child(2) {
+    left: 38%;
+    width: 7px;
+    animation-delay: 40ms !important;
+  }
+  .panel-drips i:nth-child(3) {
+    left: 61%;
+    width: 11px;
+    animation-delay: 20ms !important;
+  }
+  .panel-drips i:nth-child(4) {
+    left: 83%;
+    width: 7px;
+    animation-delay: 70ms !important;
+  }
+  @keyframes panel-drip {
+    0%,
+    20% {
+      transform: scaleY(0);
+    }
+    100% {
+      transform: scaleY(1.6);
+    }
   }
   @keyframes pour-in {
     from {
@@ -562,30 +699,6 @@
     font-weight: 600;
     letter-spacing: -0.025em;
     line-height: 1.3;
-  }
-
-  /* The status drop: a soft round pat when all is well, a drip when strained. */
-  .drop {
-    width: 12px;
-    height: 12px;
-    margin: 0 2px;
-    background: linear-gradient(160deg, var(--butter-hi), var(--butter));
-    box-shadow: inset 0 0 0 1px var(--butter-edge);
-    border-radius: 50%;
-    transform: rotate(45deg);
-    transition:
-      border-radius var(--t-slow) var(--butter-ease),
-      background-color var(--t-slow) var(--butter-ease),
-      transform var(--t-slow) var(--butter-ease);
-  }
-  .drop.level-busy {
-    border-radius: 50% 50% 22% 50%;
-    background: var(--butter-deep);
-  }
-  .drop.level-strained {
-    border-radius: 50% 50% 0 50%;
-    background: var(--danger-fill);
-    transform: rotate(45deg) translate(1px, 1px);
   }
 
   .tools {
@@ -775,10 +888,78 @@
   .protected li {
     display: grid;
     grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
-    align-items: baseline;
+    align-items: center;
     gap: 8px;
-    padding: 6px var(--inset);
+    min-height: 32px;
+    padding: 2px var(--inset);
+    border-radius: var(--r-control);
     font-size: 12px;
+    transition: background-color var(--t-soft) var(--butter-ease);
+  }
+  .protected li.closable:hover,
+  .protected li.closable:focus-within,
+  .protected li.armed {
+    background: var(--surface-soft);
+  }
+  /* The memory figure gives way to a Close button on hover (and on keyboard
+     focus), in the same spot, so the row never shifts. */
+  .p-end {
+    display: grid;
+    justify-items: end;
+    align-items: center;
+    min-width: 64px;
+  }
+  .p-end > * {
+    grid-area: 1 / 1;
+  }
+  .p-close {
+    opacity: 0;
+    filter: blur(3px);
+    pointer-events: none;
+    transition:
+      opacity var(--t-quick) var(--butter-ease),
+      filter var(--t-quick) var(--butter-ease);
+  }
+  .p-mem {
+    /* Only a label: clicks always reach the Close button underneath. */
+    pointer-events: none;
+    transition:
+      opacity var(--t-quick) var(--butter-ease),
+      filter var(--t-quick) var(--butter-ease);
+  }
+  li.closable:hover .p-close,
+  .p-close:focus-visible {
+    opacity: 1;
+    filter: none;
+    pointer-events: auto;
+  }
+  li.closable:hover .p-mem,
+  li.closable:focus-within .p-mem {
+    opacity: 0;
+    filter: blur(3px);
+  }
+  .protected li.melting {
+    pointer-events: none;
+    transform-origin: 50% 100%;
+    animation: p-melt 1000ms cubic-bezier(0.5, 0, 0.75, 0.25) forwards;
+  }
+  @keyframes p-melt {
+    0% {
+      background: var(--surface-soft);
+    }
+    25% {
+      background: var(--butter-hi);
+      transform: scale(1.01, 1.03);
+    }
+    70% {
+      background: var(--butter);
+      opacity: 1;
+    }
+    100% {
+      background: var(--butter);
+      transform: translateY(3px) scale(1.04, 0.1);
+      opacity: 0;
+    }
   }
   .p-title,
   .p-reason,
@@ -910,6 +1091,18 @@
     height: 28px;
     padding: 0 12px;
   }
+  .btn.small.p-close,
+  .btn.small.danger-soft {
+    height: 26px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+  .btn.danger-soft {
+    background: var(--surface);
+    border-color: var(--danger);
+    color: var(--danger);
+    font-weight: 600;
+  }
   .btn.primary-soft {
     background: var(--surface);
     border-color: var(--butter-edge);
@@ -955,8 +1148,15 @@
       animation: none;
     }
     :global(html.leaving) .panel {
-      filter: none;
-      transform: none;
+      animation: none;
+      opacity: 0;
+      transition: opacity 120ms linear;
+    }
+    :global(html.leaving) .panel > :global(*:not(.panel-drips)) {
+      animation: none;
+    }
+    .panel-drips {
+      display: none;
     }
     .ghost:active:not(:disabled),
     .btn:active,

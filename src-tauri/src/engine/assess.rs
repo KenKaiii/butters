@@ -48,6 +48,16 @@ pub enum Protection {
 }
 
 impl Protection {
+    /// Whether the user may still choose to close it from the Protected list.
+    /// Butters itself, whatever launched it, OS processes and the Simulator
+    /// stay locked; "in use"-style protections are advice, not a lock.
+    pub fn user_closable(&self) -> bool {
+        matches!(
+            self,
+            Protection::InUse | Protection::RecentlyUsed { .. } | Protection::InsideAppInUse { .. } | Protection::Ignored
+        )
+    }
+
     pub fn text(&self) -> String {
         match self {
             Protection::ThisApp => "Butters".into(),
@@ -805,5 +815,16 @@ mod tests {
         assert_eq!(fmt_duration(90 * MIN), "1 h 30 min");
         assert_eq!(fmt_duration(11 * HOUR), "11 h");
         assert_eq!(fmt_bytes(1536 * MB), "1.5 GB");
+    }
+
+    #[test]
+    fn only_advisory_protections_can_be_closed_anyway() {
+        assert!(Protection::InUse.user_closable());
+        assert!(Protection::RecentlyUsed { mins_ago: 3 }.user_closable());
+        assert!(Protection::InsideAppInUse { app: "Ghostty".into() }.user_closable());
+        assert!(Protection::Ignored.user_closable());
+        for locked in [Protection::ThisApp, Protection::LaunchedButters, Protection::System, Protection::Simulator] {
+            assert!(!locked.user_closable(), "{locked:?} must stay locked");
+        }
     }
 }

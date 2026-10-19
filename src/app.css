@@ -104,8 +104,7 @@ button {
 }
 
 @media (forced-colors: active) {
-  .meter-fill,
-  .drop {
+  .meter-fill {
     background: CanvasText !important;
   }
 }

@@ -14,7 +14,7 @@ export interface FakeState {
 }
 
 /** Runs in the page (serialised by Playwright's addInitScript). */
-export function installFakeBackend(init: Partial<FakeState> & { suggestions?: unknown[] }) {
+export function installFakeBackend(init: Partial<FakeState> & { suggestions?: unknown[]; protectedItems?: unknown[] }) {
   const GB = 1024 ** 3;
   const MB = 1024 ** 2;
   const state = {
@@ -36,7 +36,9 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       { id: "b", key: "agent:claude", kind: "agent_session", title: "Claude Code session", detail: "~/api", reason: "Idle 3 h", note: null, memory: 600 * MB, cpu: 4, ports: [], recommended: true, polite: true, verb: "Stop" },
       { id: "c", key: "app:chrome", kind: "browser", title: "Google Chrome", detail: null, reason: "Unused 2 h", note: null, memory: 2 * GB, cpu: 0, ports: [], recommended: false, polite: true, verb: "Quit" },
     ],
-    protected: [{ title: "Ghostty", kind: "terminal", memory: 300 * MB, cpu: 2, reason: "In use" }],
+    protected: (init.protectedItems as any[]) ?? [
+      { id: "x1-0", key: "app:ghostty#1", verb: "Quit", title: "Ghostty", kind: "terminal", memory: 300 * MB, cpu: 2, reason: "In use" },
+    ],
     watchedSecs: 7200,
     scanMs: 400,
   };
@@ -56,6 +58,11 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       return { stats: copy(scan.stats), level: "smooth" };
     },
     close_item: ({ id, force }) => {
+      const pi = (scan.protected as any[]).findIndex((x) => x.id === id);
+      if (pi >= 0) {
+        const [p] = scan.protected.splice(pi, 1) as any[];
+        return { status: "closed", message: "Freed", freed: p.memory };
+      }
       const s = scan.suggestions.find((x: any) => x.id === id) as any;
       if (!s) return { status: "refused", message: "List changed. Refresh." };
       const as = force ? "closed" : (state.closeAs[id] ?? "closed");

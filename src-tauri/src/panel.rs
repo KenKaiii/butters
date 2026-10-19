@@ -26,7 +26,7 @@ const MARGIN: (f64, f64, f64) = (12.0, 4.0, 20.0); // sides, top, bottom
 #[cfg(not(target_os = "macos"))]
 const MARGIN: (f64, f64, f64) = (0.0, 0.0, 0.0);
 /// How long the panel gets to melt away before the window is destroyed.
-const LEAVE: Duration = Duration::from_millis(240);
+const LEAVE: Duration = Duration::from_millis(540);
 
 /// When the panel last closed because it lost focus. Clicking the tray icon
 /// while the panel is open first blurs it; that click must not reopen it.

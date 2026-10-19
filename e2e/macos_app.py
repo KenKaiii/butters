@@ -137,12 +137,25 @@ def main():
         run.open_panel()
         results.append(("panel opens from a second launch", True))
 
-        run.at(*SETTINGS_BTN)
-        time.sleep(1.0)
+        # Open Settings, retrying once: the first launch after a fresh build is
+        # slow while macOS checks the new app, and a click can land too early.
+        for attempt in range(2):
+            run.at(*SETTINGS_BTN)
+            time.sleep(1.2)
+            before = run.saved()
+            run.at(SWITCH_X, SOUNDS_Y)
+            try:
+                wait(lambda: (v := run.saved()) and v.get("sounds") is False, timeout=4, what="sounds=false")
+                break
+            except AssertionError:
+                if attempt == 1:
+                    raise AssertionError("timed out waiting for Sounds switch to save sounds=false")
+                # Not on Settings yet (or the click toggled nothing): go back to a known state.
+                click(run.x - 200, run.y + 300)
+                wait(lambda: not windows_of(run.pid), what="panel to close for retry")
+                run.open_panel()
         if os.environ.get("E2E_SHOT"):
             subprocess.run(["screencapture", "-x", "-R", f"{run.x},{run.y},404,604", "/tmp/e2e-settings.png"])
-        run.at(SWITCH_X, SOUNDS_Y)
-        wait(lambda: (v := run.saved()) and v.get("sounds") is False, what="Sounds switch to save sounds=false")
         results.append(("Sounds switch saves", True))
 
         run.at(SWITCH_X, ALERTS_Y)

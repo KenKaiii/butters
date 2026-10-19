@@ -46,6 +46,10 @@ export interface Suggestion {
 }
 
 export interface Protected {
+  /** Set when the user may close it anyway; null for locked items. */
+  id: string | null;
+  key: string;
+  verb: string;
   title: string;
   kind: Kind;
   memory: number;

@@ -179,3 +179,42 @@ test("nothing wraps: every row stays one line", async ({ page }) => {
     expect(lines).toBeLessThanOrEqual(1);
   }
 });
+
+test.describe("protected and leaving", () => {
+  test("protected app: memory turns into Close on hover, confirm closes it", async ({ page }) => {
+    await open(page);
+    await page.getByRole("button", { name: /Protected/ }).click();
+    const row = page.locator(".protected li", { hasText: "Ghostty" });
+    const close = row.getByRole("button", { name: "Close Ghostty" });
+    await expect(close).toHaveCSS("opacity", "0");
+    await row.hover();
+    await expect(close).toHaveCSS("opacity", "1");
+    await close.click();
+    await row.getByRole("button", { name: "Quit?" }).click();
+    await expect(page.locator(".osd")).toBeVisible();
+    const calls = (await fake(page)).calls.filter((c) => c.cmd === "close_item");
+    expect(calls.map((c) => (c.args as any).id)).toEqual(["x1-0"]);
+  });
+
+  test("locked protected items have no Close button", async ({ page }) => {
+    await open(page, {
+      protectedItems: [{ id: null, key: "self", verb: "Quit", title: "GG Coder", kind: "app", memory: 2 * 1024 ** 3, cpu: 3, reason: "Launched Butters" }],
+    } as any);
+    await page.getByRole("button", { name: /Protected/ }).click();
+    const row = page.locator(".protected li", { hasText: "GG Coder" });
+    await row.hover();
+    await expect(row.getByRole("button")).toHaveCount(0);
+  });
+
+  test("clicking away melts the panel instead of cutting it", async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => (window as any).__buttersLeave());
+    const panel = page.locator(".panel");
+    await expect(panel).toHaveCSS("animation-name", /panel-melt$/);
+    await page.waitForTimeout(250);
+    const mid = await panel.evaluate((el) => getComputedStyle(el).opacity);
+    expect(Number(mid)).toBeGreaterThan(0.05); // still visible mid-melt, not blinked out
+    await page.waitForTimeout(400);
+    expect(Number(await panel.evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(0.05);
+  });
+});
