@@ -110,3 +110,52 @@ button {
     fill: CanvasText !important;
   }
 }
+
+/* Butters' tooltip (src/lib/tip.ts): a small cream card, never the system's grey box. */
+.butter-tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 100;
+  max-width: 260px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--bg);
+  font: 500 11.5px/1.35 var(--font);
+  letter-spacing: 0;
+  box-shadow: 0 8px 20px -8px rgba(46, 40, 32, 0.45);
+  pointer-events: none;
+  opacity: 0;
+  filter: blur(2px);
+  translate: 0 3px;
+  transition:
+    opacity 140ms var(--butter-ease),
+    filter 140ms var(--butter-ease),
+    translate 180ms var(--butter-ease);
+}
+.butter-tip[data-side="below"] {
+  translate: 0 -3px;
+}
+.butter-tip.on {
+  opacity: 1;
+  filter: none;
+  translate: 0 0;
+}
+.butter-tip-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.butter-tip-line {
+  color: color-mix(in srgb, var(--bg) 72%, transparent);
+  overflow-wrap: anywhere;
+}
+.butter-tip-title + .butter-tip-line {
+  margin-top: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .butter-tip {
+    filter: none;
+    translate: 0 0 !important;
+  }
+}

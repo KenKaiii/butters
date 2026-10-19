@@ -49,10 +49,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app::scan,
             app::scan_services,
+            app::cached_services,
             app::live_stats,
             app::smoothness,
             app::fan_culprits,
-            app::port_lookup,
             app::sweep_targets,
             sound::play_sound,
             permissions::notify_permission,

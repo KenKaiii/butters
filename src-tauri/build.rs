@@ -3,10 +3,10 @@
 const COMMANDS: &[&str] = &[
     "scan",
     "scan_services",
+    "cached_services",
     "live_stats",
     "smoothness",
     "fan_culprits",
-    "port_lookup",
     "sweep_targets",
     "play_sound",
     "notify_permission",

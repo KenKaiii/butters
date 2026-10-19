@@ -7,10 +7,10 @@
   "permissions": [
     "allow-scan",
     "allow-scan-services",
+    "allow-cached-services",
     "allow-live-stats",
     "allow-smoothness",
     "allow-fan-culprits",
-    "allow-port-lookup",
     "allow-sweep-targets",
     "allow-play-sound",
     "allow-notify-permission",

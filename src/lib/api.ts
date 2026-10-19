@@ -115,15 +115,6 @@ export interface Culprit {
   series: number[];
 }
 
-export interface PortOwner {
-  port: number;
-  title: string;
-  detail: string | null;
-  /** Set when it can be closed from here. */
-  id: string | null;
-  memory: number;
-  protected: string | null;
-}
 
 export interface Smoothness {
   score: number | null;
@@ -140,7 +131,6 @@ export const api = {
   scan: () => invoke<ScanResult>("scan"),
   smoothness: () => invoke<Smoothness>("smoothness"),
   fan: () => invoke<{ culprits: Culprit[]; minutes: number }>("fan_culprits"),
-  port: (port: number) => invoke<PortOwner[]>("port_lookup", { port }),
   sweepTargets: () => invoke<string[]>("sweep_targets"),
   live: () => invoke<{ stats: Stats; level: Level }>("live_stats"),
   /** Fire and forget; the backend checks the Sounds setting. */
@@ -148,6 +138,8 @@ export const api = {
   notifyPermission: () => invoke<Notify>("notify_permission"),
   fixNotifyPermission: () => invoke<Notify>("fix_notify_permission"),
   scanServices: () => invoke<ServicesResult>("scan_services"),
+  /** The last Docker/Ollama result, instantly; null before the first scan. */
+  cachedServices: () => invoke<ServicesResult | null>("cached_services"),
   close: (id: string, force: boolean) => invoke<Outcome>("close_item", { id, force }),
   ignore: (id: string) => invoke<void>("ignore_item", { id }),
   getSettings: () => invoke<Settings>("get_settings"),

@@ -6,6 +6,7 @@
   import { bytes } from "./format";
   import Icon from "./Icon.svelte";
   import { butterEase, dissolve, ms } from "./motion";
+  import { tip } from "./tip";
 
   let { smooth, onBack, tab: initialTab = "life" }: { smooth: Smoothness | null; onBack: () => void; tab?: "life" | "fan" } = $props();
 
@@ -79,7 +80,7 @@
 <section class="view" aria-label="Stats" in:dissolve={{ duration: 220, blur: 3 }} out:dissolve={{ duration: 160, blur: 3 }}>
   <header class="head">
     <div class="status">
-      <button class="ghost" type="button" aria-label="Back" title="Back" onclick={onBack}><Icon name="back" /></button>
+      <button class="ghost" type="button" aria-label="Back" use:tip={"Back"} onclick={onBack}><Icon name="back" /></button>
       <h1>{tab === "life" ? "Butters so far" : "What's making the fan spin"}</h1>
     </div>
   </header>
@@ -99,7 +100,7 @@
         <p class="window muted">Last {fan.minutes} min, average CPU</p>
         <ul class="fan">
           {#each fan.culprits as c (c.label)}
-            <li title={`${c.label}: avg ${Math.round(c.avg)}%, peak ${Math.round(c.peak)}% (100% = one core)`}>
+            <li use:tip={{ text: c.label, lines: [`Average ${Math.round(c.avg)}%, peak ${Math.round(c.peak)}%`, "100% = one full core"] }}>
               <span class="f-label">{c.label}</span>
               <svg class="f-spark" viewBox="0 0 90 18" preserveAspectRatio="none" aria-hidden="true">
                 <path d={spark(c.series, 90, 18)} />
@@ -118,7 +119,7 @@
           <span class="num">{big[0]}</span><span class="unit">{big[1]}</span>
         </p>
         {#if since}
-          <p class="since muted" title={since.toLocaleString()}>
+          <p class="since muted" use:tip={{ text: since.toLocaleString(), onlyIfClipped: true }}>
             Since {since.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })} · {days} day{days === 1 ? "" : "s"}
           </p>
         {/if}

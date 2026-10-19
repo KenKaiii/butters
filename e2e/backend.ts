@@ -9,8 +9,11 @@ export interface FakeState {
   settings: { alerts: boolean; launch_at_login: boolean; sounds: boolean; shortcut: string; ignored: string[] };
   services: unknown[];
   sweep: string[];
+  /** Simulated time Docker takes to answer a fresh check (ms). */
+  servicesDelay: number;
+  /** What the background check already has when the panel opens. */
+  cachedServices: unknown[] | null;
   fan: { culprits: { label: string; avg: number; peak: number; series: number[] }[]; minutes: number };
-  ports: Record<string, unknown[]>;
   notify: "ask" | "off" | "on";
   update: { current: string; available: string | null; checking: boolean; installing: boolean; error: string | null };
   smoothness: {
@@ -35,6 +38,8 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
     settings: { alerts: true, launch_at_login: false, sounds: true, shortcut: "Alt+Super+B", ignored: [] as string[] },
     services: [] as any[],
     sweep: ["a", "b"] as string[],
+    servicesDelay: 0,
+    cachedServices: null as unknown[] | null,
     fan: {
       culprits: [
         { label: "Google Chrome", avg: 62, peak: 140, series: [40, 55, 70, 140, 60, 50, 48, 66, 70, 61] },
@@ -42,10 +47,6 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       ],
       minutes: 10,
     },
-    ports: {
-      "5173": [{ port: 5173, title: "Vite dev server", detail: "~/app · :5173", id: "a", memory: 400 * MB, protected: null }],
-      "5432": [{ port: 5432, title: "Postgres.app", detail: null, id: null, memory: 120 * MB, protected: "Used 3 min ago" }],
-    } as Record<string, unknown[]>,
     notify: "on",
     update: { current: "0.1.0", available: null, checking: false, installing: false, error: null },
     closeAs: {} as Record<string, string>,
@@ -87,10 +88,14 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
 
   const handlers: Record<string, (args: any) => unknown> = {
     scan: () => copy(scan),
-    scan_services: () => ({ suggestions: copy(state.services), docker: state.services.length ? "running" : "off", ollama: "off" }),
+    scan_services: async () => {
+      await new Promise((r) => setTimeout(r, state.servicesDelay));
+      return { suggestions: copy(state.services), docker: state.services.length ? "running" : "off", ollama: "off" };
+    },
+    cached_services: () =>
+      state.cachedServices ? { suggestions: copy(state.cachedServices), docker: "running", ollama: "off" } : null,
     sweep_targets: () => copy(state.sweep),
     fan_culprits: () => copy(state.fan),
-    port_lookup: ({ port }) => copy(state.ports[String(port)] ?? []),
     live_stats: () => {
       // Moves every call so tests can see the meters are live.
       memUsed -= 256 * MB;

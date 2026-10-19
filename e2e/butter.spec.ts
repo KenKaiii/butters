@@ -46,7 +46,10 @@ test("closing drops butter into the footer puddle", async ({ page }) => {
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect.poll(() => page.locator(".drop-layer .drop").count(), { timeout: 3000 }).toBeGreaterThan(0);
   await expect(page.locator(".session-puddle")).toHaveClass(/filled/, { timeout: 4000 });
-  await expect(page.locator(".session-puddle")).toHaveAttribute("title", /freed this session/);
+  // Its Butters tooltip says what it holds.
+  await page.locator(".osd").waitFor({ state: "detached", timeout: 6000 });
+  await page.locator(".session-puddle").hover();
+  await expect(page.locator(".butter-tip.on")).toContainText("freed this session");
   // Drops clean themselves up.
   await expect.poll(() => page.locator(".drop-layer .drop").count(), { timeout: 4000 }).toBe(0);
 });

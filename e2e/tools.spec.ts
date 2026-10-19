@@ -1,4 +1,4 @@
-// Docker deep dive, leak watch, fan culprits, end-of-day sweep, quick access.
+// Docker deep dive, leak watch, fan culprits, end-of-day sweep, global shortcut.
 import { expect, test, type Page } from "@playwright/test";
 import { installFakeBackend, type FakeState } from "./backend";
 
@@ -134,35 +134,6 @@ test.describe("end-of-day sweep", () => {
 });
 
 test.describe("quick access", () => {
-  test("port lookup: a dev server can be closed straight from the answer", async ({ page }) => {
-    await open(page);
-    await page.getByLabel("What's on port").fill(":5173");
-    await page.getByRole("button", { name: "Look" }).click();
-    const result = page.locator(".port-result li");
-    await expect(result).toHaveCount(1);
-    await expect(result).toContainText("Vite dev server");
-    await result.getByRole("button", { name: "Close" }).click();
-    await expect(page.locator(".osd")).toBeVisible();
-    const call = (await fake(page)).calls.find((c) => c.cmd === "close_item")!;
-    expect((call.args as any).id).toBe("a");
-  });
-
-  test("port lookup: protected and empty answers explain themselves", async ({ page }) => {
-    await open(page);
-    const input = page.getByLabel("What's on port");
-    await input.fill("5432");
-    await page.getByRole("button", { name: "Look" }).click();
-    await expect(page.locator(".port-result")).toContainText("Postgres.app");
-    await expect(page.locator(".port-result")).toContainText("Used 3 min ago");
-    await expect(page.locator(".port-result button")).toHaveCount(0);
-    await input.fill("9999");
-    await page.getByRole("button", { name: "Look" }).click();
-    await expect(page.locator(".port-result")).toContainText("Nothing on that port");
-    await input.fill("abc");
-    await page.getByRole("button", { name: "Look" }).click();
-    expect((await fake(page)).calls.filter((c) => c.cmd === "port_lookup").map((c) => (c.args as any).port)).toEqual([5432, 9999]);
-  });
-
   test("shortcut setting saves and offers Off", async ({ page }) => {
     await open(page);
     await page.getByRole("button", { name: "Settings" }).click();
@@ -173,4 +144,70 @@ test.describe("quick access", () => {
     await select.selectOption("");
     await expect.poll(async () => (await fake(page)).settings.shortcut).toBe("");
   });
+});
+
+test.describe("docker rows load with the rest", () => {
+  const svc = [
+    { id: "k1", key: "docker:build-cache", kind: "docker_disk", title: "Docker build cache", detail: null, reason: "Unused 25 h, rebuilds if needed", note: null, memory: 0, cpu: 0, ports: [], recommended: false, polite: true, verb: "Clear", disk: 12.7e9 },
+  ];
+
+  test("background results show at once, even while Docker is slow to answer", async ({ page }) => {
+    await open(page, { services: svc, cachedServices: svc, servicesDelay: 4000 });
+    // The process rows and the Docker row are there together, long before the fresh Docker check returns.
+    await expect(page.locator(".row", { hasText: "Vite dev server" })).toBeVisible();
+    await expect(page.locator(".row", { hasText: "Docker build cache" })).toBeVisible({ timeout: 800 });
+  });
+
+  test("a fresh Docker check doesn't replay the row's entrance", async ({ page }) => {
+    await open(page, { services: svc, cachedServices: svc, servicesDelay: 600 });
+    const row = page.locator("li", { has: page.locator(".row", { hasText: "Docker build cache" }) });
+    await expect(row).toBeVisible();
+    const before = await row.evaluate((el) => {
+      (el as any).__marker = 1;
+      return true;
+    });
+    expect(before).toBe(true);
+    await page.waitForTimeout(1200); // fresh result arrives and replaces the cached one
+    // Same element (not torn down and re-poured), so no second entrance.
+    expect(await row.evaluate((el) => (el as any).__marker)).toBe(1);
+  });
+});
+
+test("tooltips are Butters cards, short, never the system box", async ({ page }) => {
+  await open(page, {
+    services: [{
+      id: "k3", key: "docker:old-images", kind: "docker_disk", title: "Old image versions ×14",
+      detail: "edge-runtime:v1.70.0, gotrue:v2.189.0, logflare:1.30.5, mailpit:v1.22.3, postgres-meta:v0.95.2, postgres:15.8.1.099, postgres:17.6.1.127",
+      reason: "Newer version kept, none in use", note: null, memory: 0, cpu: 0, ports: [], recommended: false, polite: true, verb: "Clear", disk: 14.02e9,
+    }],
+  });
+  // No native title tooltips anywhere in the panel.
+  expect(await page.locator("[title]").count()).toBe(0);
+  const label = page.locator(".row", { hasText: "Old image versions" }).locator("label.text");
+  await label.hover();
+  const card = page.locator(".butter-tip");
+  await expect(card).toHaveClass(/on/);
+  await expect(card.locator(".butter-tip-title")).toHaveText("Old image versions ×14");
+  // Reason, then four images and "+3 more": not a wall of text.
+  await expect(card.locator(".butter-tip-line")).toHaveText([
+    "Newer version kept, none in use",
+    "edge-runtime:v1.70.0",
+    "gotrue:v2.189.0",
+    "logflare:1.30.5",
+    "mailpit:v1.22.3",
+    "+3 more",
+  ]);
+  // Stays inside the window.
+  const box = (await card.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(380);
+  await page.mouse.move(5, 5);
+  await expect(card).not.toHaveClass(/on/);
+});
+
+test("rows that fit don't sprout redundant tooltips", async ({ page }) => {
+  await open(page);
+  await page.locator(".row", { hasText: "Google Chrome" }).locator("label.text").hover();
+  await page.waitForTimeout(700);
+  await expect(page.locator(".butter-tip.on")).toHaveCount(0);
 });

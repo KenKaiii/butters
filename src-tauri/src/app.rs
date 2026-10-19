@@ -99,6 +99,9 @@ pub struct AppState {
     leak_notified: Mutex<HashSet<(u32, u64)>>,
     /// Ids from the latest scans that the end-of-day sweep may include.
     sweepable: Mutex<Vec<String>>,
+    /// The last Docker/Ollama result, so the panel can show it instantly
+    /// while a fresh one is fetched.
+    services_cache: Mutex<Option<ServicesResult>>,
     pub alerts: Mutex<AlertState>,
     pub panel_open: AtomicBool,
     seq: AtomicU64,
@@ -125,6 +128,7 @@ impl AppState {
             docker_activity_path,
             leak_notified: Mutex::new(HashSet::new()),
             sweepable: Mutex::new(Vec::new()),
+            services_cache: Mutex::new(None),
             alerts: Mutex::new(AlertState::default()),
             panel_open: AtomicBool::new(false),
             seq: AtomicU64::new(1),
@@ -137,7 +141,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Suggestion {
     id: String,
@@ -186,7 +190,7 @@ pub struct ScanResult {
     scan_ms: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ServicesResult {
     suggestions: Vec<Suggestion>,
@@ -564,11 +568,13 @@ fn do_scan_services(state: &AppState) -> ServicesResult {
         sw.retain(|id| id.starts_with('p'));
         sw.extend(suggestions.iter().filter(|s| sweepable(s)).map(|s| s.id.clone()));
     }
-    ServicesResult {
+    let result = ServicesResult {
         suggestions,
         docker: if containers.is_some() { "running" } else { "off" },
         ollama: if models.is_some() { "running" } else { "off" },
-    }
+    };
+    *lock(&state.services_cache) = Some(result.clone());
+    result
 }
 
 fn blocking_err(e: impl std::fmt::Display) -> String {
@@ -588,58 +594,6 @@ pub struct FanResult {
 pub fn fan_culprits(state: State<'_, AppState>) -> FanResult {
     let (culprits, minutes) = lock(&state.trends).culprits(6);
     FanResult { culprits, minutes }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PortOwner {
-    port: u16,
-    title: String,
-    detail: Option<String>,
-    /// The suggestion id when it can be closed from here.
-    id: Option<String>,
-    memory: u64,
-    protected: Option<String>,
-}
-
-/// "What's on port 3000?": who is listening. If it's something Butters
-/// would suggest, it can be closed from the answer; otherwise it says why
-/// it's left alone.
-#[tauri::command]
-pub async fn port_lookup(app: AppHandle, port: u16) -> Result<Vec<PortOwner>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let ports = sampler::listening_ports();
-        let pids: Vec<u32> = ports.iter().filter(|(_, ps)| ps.contains(&port)).map(|(pid, _)| *pid).collect();
-        if pids.is_empty() {
-            return Vec::new();
-        }
-        let result = do_scan(&state);
-        let mut out: Vec<PortOwner> = result
-            .suggestions
-            .iter()
-            .filter(|s| s.ports.contains(&port))
-            .map(|s| PortOwner { port, title: s.title.clone(), detail: s.detail.clone(), id: Some(s.id.clone()), memory: s.memory, protected: None })
-            .collect();
-        if out.is_empty() {
-            let procs = lock(&state.sampler).snapshot(&ports);
-            let ctx = scan_context(&state);
-            let assessed = assess::assess(&procs, &ctx);
-            for a in assessed.iter().filter(|a| a.group.members.iter().any(|m| pids.contains(m))) {
-                let protected = match &a.verdict {
-                    Verdict::Protected(p) => Some(p.text()),
-                    _ => Some("Busy, left alone".to_string()),
-                };
-                out.push(PortOwner { port, title: a.group.title.clone(), detail: a.group.detail.clone(), id: None, memory: a.group.memory, protected });
-            }
-            if out.is_empty() {
-                out.push(PortOwner { port, title: "A system or other user's process".into(), detail: None, id: None, memory: 0, protected: Some("Not yours".into()) });
-            }
-        }
-        out
-    })
-    .await
-    .map_err(blocking_err)
 }
 
 /// End-of-day sweep: from the latest scans, the ids that are safe to close
@@ -675,6 +629,13 @@ pub struct LiveStats {
 #[tauri::command]
 pub async fn scan(app: AppHandle) -> Result<ScanResult, String> {
     tauri::async_runtime::spawn_blocking(move || do_scan(&app.state::<AppState>())).await.map_err(blocking_err)
+}
+
+/// The last Docker/Ollama result, instantly (None before the first one).
+/// Its ids stay valid until the next services scan replaces them.
+#[tauri::command]
+pub fn cached_services(state: State<'_, AppState>) -> Option<ServicesResult> {
+    lock(&state.services_cache).clone()
 }
 
 #[tauri::command]
@@ -852,9 +813,11 @@ pub fn spawn_background(app: AppHandle) {
                     }
                 // Docker activity every 10 minutes, even with the panel closed,
                 // so "no activity for 6 days" is measured, not guessed.
-                if tick.is_multiple_of(200) {
-                    let cs = services::docker_containers();
-                    observe_docker(&state, cs.as_deref());
+                // Docker + Ollama every 10 minutes (and once right after start),
+                // even with the panel closed: activity is measured over time,
+                // and the panel can show the result the moment it opens.
+                if tick == 20 || tick.is_multiple_of(200) {
+                    let _ = do_scan_services(&state);
                 }
                 let level = alerts::level(&stats);
                 crate::panel::set_tray_level(&app, level, &stats);

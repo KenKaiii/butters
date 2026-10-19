@@ -4,6 +4,7 @@
   import Check from "./Check.svelte";
   import Icon from "./Icon.svelte";
   import { dissolve, pour } from "./motion";
+  import { shortList, tip } from "./tip";
 
   let {
     s,
@@ -118,6 +119,18 @@
   const inputId = $derived(`pick-${s.key}`);
   // One extra fact after the reason: a caution if there is one, else where it lives.
   const aside = $derived(s.note ?? (!s.polite ? "Force close only" : s.detail));
+  // Hover card: the title, then the full reason and details as short lines.
+  // Long lists (e.g. 14 image names) show a few and "+N more".
+  const rowTip = $derived({
+    text: s.title,
+    onlyIfClipped: true,
+    lines: [
+      s.reason,
+      ...(s.note ? [s.note] : []),
+      ...(!s.polite ? ["Force close only"] : []),
+      ...(s.detail && s.detail.split(",").length > 2 ? shortList(s.detail) : s.detail ? [s.detail] : []),
+    ],
+  });
 </script>
 
 <div class="pat" class:melting class:sliding={dragging || armed}>
@@ -144,12 +157,12 @@
   onclickcapture={swallow}
 >
   <Check id={inputId} checked={selected} disabled={pending} onchange={onToggle} />
-  <label class="text" for={inputId} title={[s.title, s.reason, aside].filter(Boolean).join(" · ")}>
+  <label class="text" for={inputId} use:tip={rowTip}>
     <span class="title">{s.title}</span>
     <span class="meta">{s.reason}{#if aside}{" · "}<span class:flag={!!s.note || !s.polite}>{aside}</span>{/if}</span>
   </label>
-  <span class="mem" title={s.disk ? "Disk space" : "Memory"}>{s.disk ? `${bytes(s.disk)} disk` : bytes(s.memory)}</span>
-  <button class="ghost" type="button" aria-label={`Ignore ${s.title}`} title="Ignore" disabled={pending} onclick={onIgnore}>
+  <span class="mem">{s.disk ? `${bytes(s.disk)} disk` : bytes(s.memory)}</span>
+  <button class="ghost" type="button" aria-label={`Ignore ${s.title}`} use:tip={"Ignore"} disabled={pending} onclick={onIgnore}>
     <Icon name="eyeOff" />
   </button>
 
@@ -162,7 +175,7 @@
         <button type="button" class="btn" onclick={() => (confirmForce = false)}>Cancel</button>
         <button type="button" class="btn danger" onclick={() => { confirmForce = false; onForce(); }}>Force close</button>
       {:else}
-        <span class="msg" title={result.message}>{result.message}</span>
+        <span class="msg" use:tip={{ text: result.message, onlyIfClipped: true }}>{result.message}</span>
         {#if canForce}<button type="button" class="btn" onclick={() => (confirmForce = true)}>Force close…</button>{/if}
       {/if}
     </div>

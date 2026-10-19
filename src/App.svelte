@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { Tween } from "svelte/motion";
-  import { api, type Notify, type Outcome, type PortOwner, type Protected, type Smoothness, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
+  import { api, type Notify, type Outcome, type Protected, type Smoothness, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
   import { bytes } from "./lib/format";
   import Check from "./lib/Check.svelte";
   import Icon from "./lib/Icon.svelte";
@@ -14,6 +14,7 @@
   import Toast from "./lib/Toast.svelte";
   import StatsView from "./lib/StatsView.svelte";
   import { dropFrom } from "./lib/drops";
+  import { tip } from "./lib/tip";
 
   let scan = $state<ScanResult | null>(null);
   let services = $state<ServicesResult | null>(null);
@@ -49,10 +50,6 @@
   let statsTab = $state<"life" | "fan">("life");
   // End-of-day sweep: the ids the backend says are safe to close together.
   let sweepIds = $state<string[]>([]);
-  // "What's on port …?"
-  let portQuery = $state("");
-  let portResult = $state<PortOwner[] | null>(null);
-  let portBusy = $state(false);
   let notify = $state<Notify>("on");
   let updating = $state(false);
   // Rows pour in one after another only on the first fill.
@@ -261,34 +258,6 @@
     api.sound("tick");
   }
 
-  async function lookupPort(e: SubmitEvent) {
-    e.preventDefault();
-    const port = Number(portQuery.trim().replace(/^:/, ""));
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      portResult = [];
-      return;
-    }
-    portBusy = true;
-    try {
-      portResult = await api.port(port);
-    } catch {
-      portResult = [];
-    } finally {
-      portBusy = false;
-    }
-  }
-
-  async function closePortOwner(o: PortOwner) {
-    if (!o.id) return;
-    const s = items.find((x) => x.id === o.id);
-    if (s) {
-      overrides[s.key] = true;
-      portResult = null;
-      portQuery = "";
-      await slice(s);
-    }
-  }
-
   async function checkUpdate() {
     update = update ? { ...update, checking: true, error: null } : update;
     update = await api.checkUpdate().catch(() => update);
@@ -371,6 +340,9 @@
   }
 
   onMount(() => {
+    // Docker/Ollama results from the background check show at once, together
+    // with everything else; a fresh check then updates them quietly.
+    api.cachedServices().then((r) => r && !services && (services = r)).catch(() => {});
     api.sound("open");
     api.notifyPermission().then((n) => (notify = n)).catch(() => {});
     const live = setInterval(tickLive, 2000);
@@ -436,13 +408,13 @@
           {/key}
         </div>
         <div class="tools">
-          <button class="ghost" type="button" aria-label="Refresh" title="Refresh" onclick={refresh} disabled={refreshing || running}>
+          <button class="ghost" type="button" aria-label="Refresh" use:tip={"Refresh"} onclick={refresh} disabled={refreshing || running}>
             <span class="spin" class:spinning={refreshing}><Icon name="refresh" /></span>
           </button>
-          <button class="ghost" type="button" aria-label="Stats" title="Stats" onclick={() => openStats()}>
+          <button class="ghost" type="button" aria-label="Stats" use:tip={"Stats"} onclick={() => openStats()}>
             <Icon name="chart" />
           </button>
-          <button class="ghost" type="button" aria-label="Settings" title="Settings" onclick={openSettings}>
+          <button class="ghost" type="button" aria-label="Settings" use:tip={"Settings"} onclick={openSettings}>
             <Icon name="settings" />
           </button>
         </div>
@@ -480,7 +452,7 @@
       <div class="scroll">
         {#if error}
           <div class="empty" in:pour>
-            <p class="empty-title" title={error}>Couldn't read processes</p>
+            <p class="empty-title" use:tip={error}>Couldn't read processes</p>
             <button class="btn" type="button" onclick={refresh}>Try again</button>
           </div>
         {:else if !scan}
@@ -493,7 +465,7 @@
               {items.length ? `Could close · ${items.length}` : "Nothing to close"}
             </h2>
             {#if sweepIds.length >= 2 && !running}
-              <button class="link-btn" type="button" title="Leftovers, idle agents and idle containers. You confirm first." onclick={startSweep} in:dissolve>
+              <button class="link-btn" type="button" use:tip={{ text: "Sweep", lines: ["Leftovers, idle agents, idle containers", "You confirm first"] }} onclick={startSweep} in:dissolve>
                 Sweep {sweepIds.length}
               </button>
             {/if}
@@ -529,29 +501,6 @@
               <Toast />
             {/if}
             {#if scan.watchedSecs < 3600}<p class="empty-note muted" in:pour>Idle apps show after 1 h</p>{/if}
-          {/if}
-
-          <form class="port" onsubmit={lookupPort}>
-            <label class="port-label" for="port-q">What's on port</label>
-            <input id="port-q" class="port-input" inputmode="numeric" autocomplete="off" placeholder="3000" maxlength="6" bind:value={portQuery} oninput={() => (portResult = null)} />
-            <button class="btn small" type="submit" disabled={portBusy || !portQuery.trim()}>{portBusy ? "…" : "Look"}</button>
-          </form>
-          {#if portResult}
-            <ul class="port-result" in:pour={{ y: -4 }}>
-              {#each portResult as o, i (i)}
-                <li>
-                  <span class="p-title" title={o.detail ?? o.title}>{o.title}</span>
-                  <span class="p-reason muted">{o.protected ?? (o.detail ?? "")}</span>
-                  {#if o.id}
-                    <button class="btn small" type="button" onclick={() => closePortOwner(o)}>Close</button>
-                  {:else}
-                    <span class="num">{o.memory ? bytes(o.memory) : ""}</span>
-                  {/if}
-                </li>
-              {:else}
-                <li><span class="p-title muted">Nothing on that port</span></li>
-              {/each}
-            </ul>
           {/if}
 
           {#if scan.protected.length}
@@ -602,7 +551,7 @@
           class:filled={sessionFreed > 0}
           bind:this={puddleEl}
           style:--fill={Math.min(1, Math.log10(1 + sessionFreed / (64 * 1024 * 1024)) / 1.6)}
-          title={sessionFreed ? `${bytes(sessionFreed)} freed this session` : undefined}
+          use:tip={sessionFreed ? `${bytes(sessionFreed)} freed this session` : null}
         >
           {#key splash}<i class="ripple"></i>{/key}
         </span>
@@ -621,7 +570,7 @@
               <button class="btn primary" type="button" onclick={() => (confirming = true)}>Close {selected.length}</button>
             {:else}
               {#if smooth && (smooth.score !== null || smooth.freedWeek > 0)}
-                <button class="bar-text smooth-line" type="button" title="See everything Butters has freed" onclick={() => openStats()}>
+                <button class="bar-text smooth-line" type="button" use:tip={"See everything Butters has freed"} onclick={() => openStats()}>
                   {#if smooth.score !== null}<span>Buttery <strong>{smooth.score}</strong></span>{/if}
                   {#if smooth.freedWeek > 0}<span class="muted">· {bytes(smooth.freedWeek)} this week</span>{/if}
                 </button>
@@ -645,7 +594,7 @@
     <section class="view" aria-label="Settings" in:dissolve={{ duration: 220, blur: 3 }} out:dissolve={{ duration: 160, blur: 3 }}>
       <header class="head">
         <div class="status">
-          <button class="ghost" type="button" aria-label="Back" title="Back" onclick={() => (view = "main")}><Icon name="back" /></button>
+          <button class="ghost" type="button" aria-label="Back" use:tip={"Back"} onclick={() => (view = "main")}><Icon name="back" /></button>
           <h1>Settings</h1>
         </div>
       </header>
@@ -1089,59 +1038,6 @@
   }
   .link-btn:hover {
     background: var(--butter-hi);
-  }
-
-  /* What's on port … */
-  .port {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 8px;
-    padding: 10px var(--inset) 4px;
-  }
-  .port-label {
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-  .port-input {
-    min-width: 0;
-    height: 28px;
-    padding: 0 10px;
-    border: 1px solid var(--control-line);
-    border-radius: var(--r-control);
-    background: var(--surface);
-    color: var(--ink);
-    font: inherit;
-    font-size: 12.5px;
-    line-height: 1.25;
-  }
-  .port-input::placeholder {
-    color: var(--muted);
-  }
-  .port-result {
-    list-style: none;
-    margin: 0;
-    padding: 0 0 4px;
-  }
-  .port-result li {
-    display: grid;
-    grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    min-height: 32px;
-    padding: 2px var(--inset);
-    font-size: 12px;
-  }
-  .port-result .p-title,
-  .port-result .p-reason {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .port-result .p-title {
-    font-weight: 600;
   }
 
   .select {
