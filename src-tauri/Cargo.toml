@@ -25,7 +25,8 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system", 
 listeners = "0.6.1"
 # Plain-HTTP client for the local Ollama API (no TLS needed for 127.0.0.1).
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }
-tauri-plugin-updater = "2.14.0"
+# No "zip": Windows updates use the plain NSIS setup.exe, and this drops the vulnerable zip crate.
+tauri-plugin-updater = { version = "2.14.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
