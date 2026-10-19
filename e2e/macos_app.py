@@ -20,6 +20,8 @@ Checks:
      process is really gone.
   5. Clicking outside closes the panel and the window is destroyed.
   6. The global shortcut (⌥⌘B) opens and closes the panel.
+  7. While closing, the panel stays open even if another app takes focus,
+     and a click elsewhere closes it afterwards.
 """
 import json
 import os
@@ -118,7 +120,8 @@ class Run:
 
 def leftover_server():
     """A throwaway 'dev server' whose terminal is gone: node listening on a port, parent = launchd."""
-    script = "require('http').createServer((q,s)=>s.end('ok')).listen(0,'127.0.0.1');setInterval(()=>{},1e9)"
+    # Takes 2.5 s to stop after SIGTERM, like a real app saving on quit.
+    script = "require('http').createServer((q,s)=>s.end('ok')).listen(0,'127.0.0.1');setInterval(()=>{},1e9);process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),2500))"
     # Double-fork via sh so the node process is re-parented to launchd (orphaned).
     out = subprocess.run(["/bin/sh", "-c", f"nohup node -e \"{script}\" >/dev/null 2>&1 & echo $!"], capture_output=True, text=True)
     return int(out.stdout.strip())
@@ -191,8 +194,20 @@ def main():
         run.at(330, 580 - 30)  # "Close 1"
         time.sleep(0.6)
         run.at(345, 580 - 30)  # confirm "Close"
+        # Mid-close another app takes focus (as when quitting Docker): the
+        # panel must stay open until the close and its result are done.
+        time.sleep(0.8)
+        subprocess.run(["osascript", "-e", 'tell application "Finder" to activate'], capture_output=True)
         wait(lambda: not alive(server), timeout=12, what="the leftover dev server to exit")
         results.append(("leftover dev server closed for real", True))
+        time.sleep(1.0)
+        assert windows_of(run.pid), "panel closed while it was closing things"
+        results.append(("panel stays open while closing, even when focus moves", True))
+        # Afterwards it has focus again, so clicking away closes it as usual.
+        time.sleep(3.0)
+        click(run.x - 200, run.y + 300)
+        wait(lambda: not windows_of(run.pid), what="panel to close on click-away after closing")
+        results.append(("click-away still closes it afterwards", True))
     except AssertionError as e:
         results.append((str(e), False))
     finally:

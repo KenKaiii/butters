@@ -20,6 +20,7 @@
     "allow-get-settings",
     "allow-set-settings",
     "allow-hide-panel",
+    "allow-hold-panel",
     "allow-quit-butters",
     "allow-update-status",
     "allow-check-update",

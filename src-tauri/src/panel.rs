@@ -36,6 +36,30 @@ static TRAY_LEVEL: AtomicU8 = AtomicU8::new(0);
 /// Bumped for every new panel, so a late close can't hit a newer panel.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static LEAVING: AtomicBool = AtomicBool::new(false);
+/// While Butters is closing things (and showing the result), the panel stays
+/// open even though quitting an app hands focus to another app.
+static HOLD: AtomicBool = AtomicBool::new(false);
+static HOLD_RELEASED: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Keep the panel open (true) while closing; on release, bring focus back to
+/// the panel so a click elsewhere closes it as usual.
+pub fn hold(app: &AppHandle, on: bool) {
+    HOLD.store(on, Ordering::SeqCst);
+    if !on {
+        if let Ok(mut t) = HOLD_RELEASED.lock() {
+            *t = Some(Instant::now());
+        }
+        if let Some(w) = app.get_webview_window(PANEL)
+            && !LEAVING.load(Ordering::SeqCst) {
+                let _ = w.set_focus();
+            }
+    }
+}
+
+fn held() -> bool {
+    HOLD.load(Ordering::SeqCst)
+        || HOLD_RELEASED.lock().map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_millis(600))).unwrap_or(false)
+}
 
 // Colour icons on every platform (not macOS template images), so the menu
 // bar shows an actual pat of butter. Drawn by scripts/make_icons.py.
@@ -141,6 +165,7 @@ pub fn open(app: &AppHandle, rect: Option<Rect>) {
     let Ok(win) = builder.build() else { return };
     GENERATION.fetch_add(1, Ordering::SeqCst);
     LEAVING.store(false, Ordering::SeqCst);
+    HOLD.store(false, Ordering::SeqCst);
     position(app, &win, rect);
     if let Ok(mut t) = OPENED_AT.lock() {
         *t = Some(Instant::now());
@@ -150,7 +175,7 @@ pub fn open(app: &AppHandle, rect: Option<Rect>) {
     win.on_window_event(move |event| match event {
         WindowEvent::Focused(false) => {
             let settling = OPENED_AT.lock().map(|t| t.is_some_and(|t| t.elapsed() < Duration::from_millis(300))).unwrap_or(false);
-            if !settling {
+            if !settling && !held() {
                 if let Ok(mut t) = CLOSED_BY_BLUR.lock() {
                     *t = Some(Instant::now());
                 }

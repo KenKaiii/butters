@@ -224,3 +224,48 @@ test.describe("protected and leaving", () => {
     expect(Number(await panel.evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(0.05);
   });
 });
+
+test.describe("closing several at once", () => {
+  const MB = 1024 ** 2;
+  const mk = (id: string, title: string, mem: number) => ({
+    id, key: `k:${id}`, kind: "dev_server", title, detail: "~/x", reason: "Terminal closed", note: null,
+    memory: mem * MB, cpu: 0, ports: [], recommended: true, polite: true, verb: "Stop", disk: 0,
+  });
+  const four = [mk("a", "Vite dev server", 400), mk("b", "Next.js dev server", 700), mk("c", "Storybook dev server", 300), mk("d", "Expo dev server", 500)];
+
+  test("the panel is held open for the whole close, then let go", async ({ page }) => {
+    await open(page, { suggestions: four, sweep: [] } as any);
+    await page.getByRole("button", { name: "Close 4" }).click();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page.locator(".osd")).toBeVisible();
+    await expect.poll(async () => (await fake(page)).calls.filter((c) => c.cmd === "hold_panel").length, { timeout: 5000 }).toBe(2);
+    const calls = (await fake(page)).calls.map((c) => (c.cmd === "hold_panel" ? `hold:${(c.args as any).on}` : c.cmd));
+    const first = calls.indexOf("hold:true");
+    const last = calls.lastIndexOf("hold:false");
+    const closes = calls.map((c, i) => (c === "close_item" ? i : -1)).filter((i) => i >= 0);
+    expect(closes).toHaveLength(4);
+    for (const i of closes) expect(i > first && i < last).toBe(true);
+  });
+
+  test("nothing is left behind after the melt: no slab, no line, no drops", async ({ page }) => {
+    await open(page, { suggestions: four, sweep: [] } as any);
+    await page.getByRole("button", { name: "Close 4" }).click();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    // During: the footer says Closing… rather than counting down.
+    await expect(page.locator(".bar")).toContainText("Closing");
+    await page.locator(".osd").waitFor({ state: "detached", timeout: 8000 });
+    await expect(page.locator(".pat.melting")).toHaveCount(0);
+    await expect(page.locator(".drop-layer .drop")).toHaveCount(0);
+    await expect(page.locator(".session-puddle")).toHaveCount(0);
+    await expect(page.getByText("Nothing to close")).toBeVisible();
+    // No butter-coloured element is lying around between the list and the footer.
+    const leftovers = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLElement>(".scroll *, .bar > *")].filter((el) => {
+        const cs = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return r.height > 0 && r.height < 10 && r.width > 60 && Number(cs.opacity) > 0.05 && /rgb\(2[34]\d, 2[01]\d, 1[0-4]\d\)/.test(cs.backgroundColor + cs.backgroundImage);
+      }).length,
+    );
+    expect(leftovers).toBe(0);
+  });
+});

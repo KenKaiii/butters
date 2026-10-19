@@ -392,25 +392,30 @@
   .melting .row > :global(*) {
     animation: content-melt 560ms var(--butter-ease) forwards;
   }
+  /* Warm to butter, slump down onto its own baseline and fade. It stays in
+     its own slot (no growing past its row), so several melting at once read
+     as separate pats, never one slab. */
   @keyframes row-melt {
     0% {
       background: var(--surface-picked);
       transform: none;
       opacity: 1;
     }
-    22% {
+    25% {
       background: var(--butter-hi);
-      transform: scale(1.01, 1.02);
-    }
-    70% {
-      background: var(--butter);
-      border-radius: 20px;
+      transform: scale(1.005, 1.01);
       opacity: 1;
+    }
+    65% {
+      background: var(--butter);
+      border-radius: 18px;
+      transform: scale(1.01, 0.55);
+      opacity: 0.9;
     }
     100% {
       background: var(--butter);
-      border-radius: 40px;
-      transform: translateY(4px) scale(1.04, 0.08);
+      border-radius: 30px;
+      transform: scale(1.02, 0.12);
       opacity: 0;
     }
   }

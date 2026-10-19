@@ -41,11 +41,9 @@
   let update = $state<UpdateStatus | null>(null);
   // A protected app the user chose to close: first click arms, second confirms.
   let armedKey = $state<string | null>(null);
-  // Physics melt: drops fall into a footer puddle that holds this session's savings.
+  // Physics melt: drops fall from melting rows and splash on the footer edge.
   let dropLayer: HTMLDivElement | undefined = $state();
-  let puddleEl: HTMLSpanElement | undefined = $state();
-  let sessionFreed = $state(0);
-  let splash = $state(0);
+  let footerEl: HTMLElement | undefined = $state();
   let smooth = $state<Smoothness | null>(null);
   let statsTab = $state<"life" | "fan">("life");
   // End-of-day sweep: the ids the backend says are safe to close together.
@@ -56,13 +54,22 @@
   let firstFill = $state(true);
   let panelEl: HTMLElement;
 
+  // Rows that are mid-melt stay in the list (as they were) until their melt
+  // finishes, even if a refresh no longer lists them, so a row is never torn
+  // out halfway and never gets a second exit animation on top.
+  let meltingRows = $state<Record<string, Suggestion>>({});
   const items = $derived(
-    [...(scan?.suggestions ?? []), ...(services?.suggestions ?? [])].filter((s) => !gone[s.key]).sort(
+    [
+      ...[...(scan?.suggestions ?? []), ...(services?.suggestions ?? [])].filter((s) => !meltingRows[s.key]),
+      ...Object.values(meltingRows),
+    ]
+      .filter((s) => !gone[s.key])
+      .sort(
       (a, b) => Number(b.recommended) - Number(a.recommended) || b.memory - a.memory,
     ),
   );
   const isSelected = (s: Suggestion) => overrides[s.key] ?? s.recommended;
-  const selected = $derived(items.filter(isSelected));
+  const selected = $derived(items.filter((s) => !meltingRows[s.key] && isSelected(s)));
   const freeable = $derived(selected.reduce((n, s) => n + s.memory, 0));
 
   const levelText = { smooth: "Running smooth", busy: "Getting busy", strained: "Under strain" } as const;
@@ -130,27 +137,44 @@
   const sleep = (n: number) => new Promise((r) => setTimeout(r, n));
 
   /** Plays the melt on a closed row, then lets it leave the list. */
-  /** Drops fall from the melting row into the footer puddle. */
-  function pour_drops(key: string, freed: number) {
+  /** Drops fall from the melting row and splash on the footer's top edge. */
+  function pour_drops(key: string) {
     const row = document.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`);
-    if (!row || !dropLayer || !puddleEl) {
-      sessionFreed += freed;
-      return;
-    }
-    dropFrom(dropLayer, row.getBoundingClientRect(), puddleEl.getBoundingClientRect(), () => {
-      sessionFreed += freed;
-      splash++;
-    });
+    if (!row || !dropLayer || !footerEl) return;
+    dropFrom(dropLayer, row.getBoundingClientRect(), footerEl.getBoundingClientRect());
   }
 
-  function meltAway(s: Suggestion, freed = s.memory) {
+  /** Starts one row's melt (it stays in the list until `release`). */
+  function startMelt(s: Suggestion) {
+    meltingRows[s.key] = s;
     melting[s.key] = true;
     api.sound("melt");
-    pour_drops(s.key, freed);
-    setTimeout(() => {
-      gone[s.key] = true;
-      delete melting[s.key];
-    }, ms(MELT_MS));
+    pour_drops(s.key);
+  }
+
+  /** The melted rows leave the list together, in one smooth reflow. */
+  function release(keys: string[]) {
+    for (const k of keys) {
+      gone[k] = true; // instant exit: the melt already played
+      delete melting[k];
+      delete meltingRows[k];
+    }
+  }
+
+  function meltAway(s: Suggestion) {
+    startMelt(s);
+    setTimeout(() => release([s.key]), ms(MELT_MS));
+  }
+
+  /** Several rows melt one after another, a beat apart, then leave together. */
+  async function meltAll(rows: { s: Suggestion }[]) {
+    const STAGGER = 110;
+    for (const [i, r] of rows.entries()) {
+      if (i) await sleep(ms(STAGGER));
+      startMelt(r.s);
+    }
+    // When the last one has finished melting, all of them go at once.
+    setTimeout(() => release(rows.map((r) => r.s.key)), ms(MELT_MS));
   }
 
   function celebrate(closed: Suggestion[], outs: Outcome[]) {
@@ -162,35 +186,58 @@
     void loadSmoothness();
   }
 
-  async function closeSelected() {
+  /** Runs a close flow with the panel held open, then gives focus back. */
+  async function held<T>(work: () => Promise<T>): Promise<T> {
+    api.hold(true);
+    try {
+      return await work();
+    } finally {
+      api.hold(false);
+    }
+  }
+
+  function closeSelected() {
+    return held(closeSelectedNow);
+  }
+
+  async function closeSelectedNow() {
     confirming = false;
     running = true;
     const batch = [...selected];
     const closed: Suggestion[] = [];
     const outs: Outcome[] = [];
+    // Close them all first (each row shows "Closing…"), then melt the ones
+    // that went, together, so the list doesn't reshuffle mid-animation.
     for (const s of batch) {
       const out = await closeOne(s, false);
       if (out.status === "closed") {
         closed.push(s);
         outs.push(out);
         delete overrides[s.key];
-        meltAway(s, out.freed);
       }
     }
-    running = false;
     if (closed.length) {
+      await meltAll(closed.map((s) => ({ s })));
       await sleep(ms(MELT_MS * 0.7));
       celebrate(closed, outs);
+      // Footer stays on "Closing…" and the list isn't refreshed until the
+      // melted rows have left, so nothing reshuffles under the animation.
+      await sleep(ms(MELT_MS * 0.35));
     } else {
       say("Nothing closed");
     }
+    running = false;
     await refresh();
   }
 
-  async function force(s: Suggestion) {
+  function force(s: Suggestion) {
+    return held(() => forceNow(s));
+  }
+
+  async function forceNow(s: Suggestion) {
     const out = await closeOne(s, true);
     if (out.status === "closed") {
-      meltAway(s, out.freed);
+      meltAway(s);
       await sleep(ms(MELT_MS * 0.7));
       celebrate([s], [out]);
     } else {
@@ -199,7 +246,11 @@
     await refresh();
   }
 
-  async function closeProtected(p: Protected) {
+  function closeProtected(p: Protected) {
+    return held(() => closeProtectedNow(p));
+  }
+
+  async function closeProtectedNow(p: Protected) {
     if (!p.id) return;
     armedKey = null;
     pending[p.key] = true;
@@ -214,7 +265,7 @@
     if (out.status === "closed") {
       melting[p.key] = true;
       api.sound("melt");
-      pour_drops(p.key, out.freed);
+      pour_drops(p.key);
       setTimeout(() => {
         gone[p.key] = true;
         delete melting[p.key];
@@ -229,11 +280,15 @@
   }
 
   /** Knife gesture: slice one row off (polite close, like Close). */
-  async function slice(s: Suggestion) {
+  function slice(s: Suggestion) {
+    return held(() => sliceNow(s));
+  }
+
+  async function sliceNow(s: Suggestion) {
     const out = await closeOne(s, false);
     if (out.status === "closed") {
       delete overrides[s.key];
-      meltAway(s, out.freed);
+      meltAway(s);
       await sleep(ms(MELT_MS * 0.7));
       celebrate([s], [out]);
     }
@@ -320,7 +375,7 @@
     for (const k of Object.keys(results)) if (!keys.has(k) && !pending[k]) delete results[k];
     // Once a scan no longer lists something, it can't come back as "gone".
     const listed = new Set([...(scan?.suggestions ?? []), ...(services?.suggestions ?? [])].map((s) => s.key));
-    for (const k of Object.keys(gone)) if (!listed.has(k)) delete gone[k];
+    for (const k of Object.keys(gone)) if (!listed.has(k) && !meltingRows[k]) delete gone[k];
   });
 
   /** Live meters: memory and CPU every 2 s while the panel is open. */
@@ -544,17 +599,7 @@
         {/if}
       </div>
 
-      <footer class="bar">
-        <!-- The session puddle: grows with what you've freed since opening Butters. -->
-        <span
-          class="session-puddle"
-          class:filled={sessionFreed > 0}
-          bind:this={puddleEl}
-          style:--fill={Math.min(1, Math.log10(1 + sessionFreed / (64 * 1024 * 1024)) / 1.6)}
-          use:tip={sessionFreed ? `${bytes(sessionFreed)} freed this session` : null}
-        >
-          {#key splash}<i class="ripple"></i>{/key}
-        </span>
+      <footer class="bar" bind:this={footerEl}>
         {#key footState}
           <div class="bar-inner" in:dissolve={{ delay: 60 }} out:dissolve={{ duration: 160 }}>
             {#if footState === "running"}
@@ -745,43 +790,6 @@
     border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
     background: radial-gradient(circle at 35% 30%, #fff5d6, var(--butter) 55%, var(--butter-deep));
     will-change: transform, opacity;
-  }
-  .session-puddle {
-    position: absolute;
-    left: 50%;
-    top: -3px;
-    width: 220px;
-    height: 7px;
-    border-radius: 50%;
-    transform: translateX(-50%) scale(calc(0.2 + var(--fill, 0) * 0.8), calc(0.4 + var(--fill, 0) * 0.6));
-    background: radial-gradient(closest-side, var(--butter), rgba(239, 210, 127, 0));
-    opacity: 0;
-    pointer-events: none;
-    transition:
-      transform 900ms var(--butter-ease),
-      opacity 600ms var(--butter-ease);
-  }
-  .session-puddle.filled {
-    opacity: 0.9;
-    pointer-events: auto;
-  }
-  .ripple {
-    position: absolute;
-    inset: -3px 30%;
-    border-radius: 50%;
-    border: 1.5px solid var(--butter-deep);
-    opacity: 0;
-    animation: ripple 700ms var(--butter-ease);
-  }
-  @keyframes ripple {
-    from {
-      opacity: 0.6;
-      transform: scale(0.4, 0.6);
-    }
-    to {
-      opacity: 0;
-      transform: scale(1.3, 1.6);
-    }
   }
   .smooth-line {
     border: 0;

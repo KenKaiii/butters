@@ -62,6 +62,7 @@ pub fn run() {
             app::get_settings,
             app::set_settings,
             app::hide_panel,
+            app::hold_panel,
             app::quit_butters,
             updates::update_status,
             updates::check_update,

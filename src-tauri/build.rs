@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "get_settings",
     "set_settings",
     "hide_panel",
+    "hold_panel",
     "quit_butters",
     "update_status",
     "check_update",

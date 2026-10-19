@@ -753,6 +753,12 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settin
     Ok(saved)
 }
 
+/// The panel asks to stay open while it closes things (see panel::hold).
+#[tauri::command]
+pub fn hold_panel(app: AppHandle, on: bool) {
+    crate::panel::hold(&app, on);
+}
+
 #[tauri::command]
 pub fn hide_panel(app: AppHandle) {
     crate::panel::close(&app);

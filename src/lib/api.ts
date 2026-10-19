@@ -145,6 +145,8 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   setSettings: (settings: Settings) => invoke<Settings>("set_settings", { settings }),
   hide: () => invoke<void>("hide_panel"),
+  /** Keep the panel open while closing things (quitting an app moves focus). */
+  hold: (on: boolean) => void invoke("hold_panel", { on }).catch(() => {}),
   quit: () => invoke<void>("quit_butters"),
   updateStatus: () => invoke<UpdateStatus>("update_status"),
   checkUpdate: () => invoke<UpdateStatus>("check_update"),
