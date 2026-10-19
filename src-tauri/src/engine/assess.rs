@@ -12,6 +12,7 @@ use super::model::{Group, Kind, ProcInfo};
 
 const MIN: u64 = 60;
 const HOUR: u64 = 60 * MIN;
+const DAY: u64 = 24 * HOUR;
 const MB: u64 = 1024 * 1024;
 const GB: u64 = 1024 * MB;
 
@@ -30,6 +31,8 @@ pub struct Context {
     pub watched_secs: u64,
     /// Running Docker containers, when known.
     pub running_containers: Option<usize>,
+    /// True when every running container has been idle for a day or more.
+    pub containers_all_idle: Option<bool>,
 }
 
 /// An app counts as recently used for this long after it was last in front.
@@ -222,7 +225,21 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
             ports: Vec::new(),
             host_app: None,
             host_root: None,
+            growth: None,
         });
+    }
+
+    // 1b. Virtual machines belong to the app responsible for them, so Docker
+    // Desktop's VM memory counts as Docker's (and quitting Docker frees it).
+    for p in procs {
+        if !p.owned_by_user || claimed.contains(&p.pid) {
+            continue;
+        }
+        let Some(owner) = p.responsible else { continue };
+        if let Some(g) = groups.iter_mut().find(|g| g.app_pid.is_some() && g.members.contains(&owner)) {
+            g.members.push(p.pid);
+            claimed.insert(p.pid);
+        }
     }
 
     // 2. Command-line work: agent sessions, dev servers, MCP servers...
@@ -294,6 +311,7 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
             ports: Vec::new(),
             host_app: host.as_ref().map(|(a, _)| app_name(a)),
             host_root: host.map(|(_, pid)| pid),
+            growth: None,
         });
     }
 
@@ -328,6 +346,7 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
             ports: Vec::new(),
             host_app: None,
             host_root: None,
+            growth: None,
         });
     }
 
@@ -347,6 +366,10 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
                 idle = p.idle_secs;
                 g.idle_is_lower_bound = p.idle_is_lower_bound;
             }
+            if let Some(gr) = p.growth
+                && g.growth.is_none_or(|cur| gr.0 > cur.0) {
+                    g.growth = Some(gr);
+                }
         }
         g.idle_secs = if idle == u64::MAX { 0 } else { idle };
         g.ports.sort_unstable();
@@ -376,7 +399,9 @@ fn cli_title(kind: Kind, label: &str) -> String {
 }
 
 pub fn fmt_duration(secs: u64) -> String {
-    if secs >= HOUR {
+    if secs >= 2 * DAY {
+        format!("{} d", secs / DAY)
+    } else if secs >= HOUR {
         let h = secs / HOUR;
         let m = (secs % HOUR) / MIN;
         if m == 0 || h >= 10 { format!("{h} h") } else { format!("{h} h {m} min") }
@@ -486,6 +511,12 @@ fn suggest(g: &Group, ctx: &Context, by_root: &HashMap<u32, &Group>) -> Verdict 
         return s(reason, true);
     }
 
+    // Leak watch: memory that keeps climbing is worth a look, whatever it is.
+    if let Some((bytes, secs)) = g.growth
+        && g.kind != Kind::Terminal {
+            return s(format!("Grew {} in {}", fmt_bytes(bytes), fmt_duration(secs.max(MIN))), false);
+        }
+
     match g.kind {
         Kind::AgentSession => {
             if (g.idle_secs >= 30 * MIN && heavy_enough) || (g.idle_secs >= 2 * HOUR && mem >= 50 * MB) {
@@ -510,6 +541,9 @@ fn suggest(g: &Group, ctx: &Context, by_root: &HashMap<u32, &Group>) -> Verdict 
             if ctx.running_containers == Some(0) && mem >= 500 * MB {
                 return s("No containers running".to_string(), true);
             }
+            if ctx.containers_all_idle == Some(true) && mem >= 500 * MB {
+                return s("All containers idle 1 d+".to_string(), false);
+            }
         }
         Kind::Browser | Kind::Editor | Kind::App => {
             let last_used = g.members.iter().filter_map(|m| ctx.recent_pids.get(m)).min().copied();
@@ -523,7 +557,7 @@ fn suggest(g: &Group, ctx: &Context, by_root: &HashMap<u32, &Group>) -> Verdict 
                 return s(quiet_for(g), false);
             }
         }
-        Kind::DockerContainer | Kind::OllamaModel => {}
+        Kind::DockerContainer | Kind::DockerDisk | Kind::OllamaModel => {}
     }
 
     if busy {
@@ -826,5 +860,41 @@ mod tests {
         for locked in [Protection::ThisApp, Protection::LaunchedButters, Protection::System, Protection::Simulator] {
             assert!(!locked.user_closable(), "{locked:?} must stay locked");
         }
+    }
+
+    #[test]
+    fn steady_growth_is_suggested_but_never_preticked() {
+        let mut node = p(70, 1, "node", &["node", "build.js"]);
+        node.memory = 3 * GB;
+        node.growth = Some((2 * GB, 40 * MIN));
+        let mut fine = p(71, 1, "node", &["node", "other.js"]);
+        fine.memory = 3 * GB;
+        let out = assess(&[launchd(), node, fine], &Context { self_pid: 999, ..Default::default() });
+        let leak = out.iter().find(|a| a.group.root == 70).unwrap();
+        match &leak.verdict {
+            Verdict::Suggest { reason, recommended, .. } => {
+                assert_eq!(reason, "Grew 2.0 GB in 40 min");
+                assert!(!recommended);
+            }
+            v => panic!("{v:?}"),
+        }
+        assert!(fmt_duration(6 * DAY + 3 * HOUR).starts_with("6 d"));
+        assert_eq!(fmt_duration(30 * HOUR), "30 h");
+    }
+
+    #[test]
+    fn docker_vm_counts_as_docker() {
+        let docker = app(60, 1, "Docker", "Docker Desktop");
+        let mut vm = p(61, 1, "com.apple.Virtualization.VirtualMachine", &["com.apple.Virtualization.VirtualMachine"]);
+        vm.exe = Some("/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine".into());
+        vm.memory = 6 * GB;
+        vm.responsible = Some(60);
+        let ctx = Context { self_pid: 999, running_containers: Some(0), ..Default::default() };
+        let out = assess(&[launchd(), docker, vm], &ctx);
+        let d = out.iter().find(|a| a.group.title == "Docker").expect("docker group");
+        assert!(d.group.members.contains(&61));
+        assert!(d.group.memory >= 6 * GB);
+        assert!(matches!(d.verdict, Verdict::Suggest { recommended: true, .. }));
+        assert!(!out.iter().any(|a| a.group.root == 61), "VM is not its own (system) item");
     }
 }

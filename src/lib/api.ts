@@ -14,6 +14,7 @@ export type Kind =
   | "app"
   | "process"
   | "docker_container"
+  | "docker_disk"
   | "ollama_model";
 
 export type Level = "smooth" | "busy" | "strained";
@@ -43,6 +44,8 @@ export interface Suggestion {
   recommended: boolean;
   polite: boolean;
   verb: string;
+  /** Disk space it gives back (Docker clean-ups) instead of memory. */
+  disk: number;
 }
 
 export interface Protected {
@@ -73,7 +76,7 @@ export interface ServicesResult {
 }
 
 export type Outcome =
-  | { status: "closed"; message: string; freed: number }
+  | { status: "closed"; message: string; freed: number; disk: number }
   | { status: "still_running"; message: string }
   | { status: "needs_force"; message: string }
   | { status: "refused"; message: string }
@@ -83,6 +86,7 @@ export interface Settings {
   alerts: boolean;
   launch_at_login: boolean;
   sounds: boolean;
+  shortcut: string;
   ignored: string[];
 }
 
@@ -101,6 +105,24 @@ export interface Lifetime {
   closed: number;
   by_kind: Record<string, number>;
   best_day: number;
+  disk_freed: number;
+}
+
+export interface Culprit {
+  label: string;
+  avg: number;
+  peak: number;
+  series: number[];
+}
+
+export interface PortOwner {
+  port: number;
+  title: string;
+  detail: string | null;
+  /** Set when it can be closed from here. */
+  id: string | null;
+  memory: number;
+  protected: string | null;
 }
 
 export interface Smoothness {
@@ -117,6 +139,9 @@ export type Notify = "ask" | "off" | "on";
 export const api = {
   scan: () => invoke<ScanResult>("scan"),
   smoothness: () => invoke<Smoothness>("smoothness"),
+  fan: () => invoke<{ culprits: Culprit[]; minutes: number }>("fan_culprits"),
+  port: (port: number) => invoke<PortOwner[]>("port_lookup", { port }),
+  sweepTargets: () => invoke<string[]>("sweep_targets"),
   live: () => invoke<{ stats: Stats; level: Level }>("live_stats"),
   /** Fire and forget; the backend checks the Sounds setting. */
   sound: (name: Sound) => void invoke("play_sound", { name }).catch(() => {}),

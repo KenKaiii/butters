@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-port-lookup"
+description = "Enables the port_lookup command without any pre-configured scope."
+commands.allow = ["port_lookup"]
+
+[[permission]]
+identifier = "deny-port-lookup"
+description = "Denies the port_lookup command without any pre-configured scope."
+commands.deny = ["port_lookup"]

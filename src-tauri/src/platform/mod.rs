@@ -71,6 +71,12 @@ pub fn can_ask_politely(app_pid: Option<u32>, pids: &[u32]) -> bool {
     imp::can_ask_politely(app_pid, pids)
 }
 
+/// The app macOS holds responsible for a helper process (e.g. Docker Desktop
+/// for its virtual machine). `None` where unknown or unsupported.
+pub fn responsible_pid(pid: u32) -> Option<u32> {
+    imp::responsible_pid(pid)
+}
+
 /// Polite request for a command-line process to stop (SIGTERM on Mac).
 pub fn ask_process_to_stop(pid: u32) -> Result<(), String> {
     imp::ask_process_to_stop(pid)

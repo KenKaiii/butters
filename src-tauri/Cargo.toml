@@ -27,6 +27,7 @@ listeners = "0.6.1"
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }
 # No "zip": Windows updates use the plain NSIS setup.exe, and this drops the vulnerable zip crate.
 tauri-plugin-updater = { version = "2.14.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
+tauri-plugin-global-shortcut = "2.4.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

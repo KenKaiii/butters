@@ -82,6 +82,15 @@ fn toggle(app: &AppHandle, rect: Rect) {
 
 /// Lets the panel play its melt-away, then destroys the window (and with it
 /// the web view's memory).
+/// The global shortcut: open the panel (under the menu bar icon), or close it.
+pub fn toggle_from_shortcut(app: &AppHandle) {
+    if app.get_webview_window(PANEL).is_some() {
+        close(app);
+    } else {
+        open(app, None);
+    }
+}
+
 pub fn close(app: &AppHandle) {
     let Some(w) = app.get_webview_window(PANEL) else { return };
     if LEAVING.swap(true, Ordering::SeqCst) {

@@ -30,8 +30,9 @@ pub struct ProcTarget {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Outcome {
-    /// Everything exited. `freed` is the measured memory of what exited.
-    Closed { message: String, freed: u64 },
+    /// Everything exited. `freed` is the measured memory of what exited;
+    /// `disk` is disk space given back (Docker clean-ups).
+    Closed { message: String, freed: u64, disk: u64 },
     /// Asked politely, but it's still running (maybe asking to save).
     StillRunning { message: String },
     /// Can't be asked politely; only a forced close would work.
@@ -185,7 +186,7 @@ pub fn close(target: &ProcTarget, force: bool, guard: &Guard) -> Outcome {
         Err(message) => return Outcome::Refused { message },
     };
     if live.is_empty() {
-        return Outcome::Closed { message: "Already closed".to_string(), freed: 0 };
+        return Outcome::Closed { message: "Already closed".to_string(), freed: 0, disk: 0 };
     }
     let pids: Vec<u32> = live.iter().map(|l| l.pid).collect();
 
@@ -200,7 +201,7 @@ pub fn close(target: &ProcTarget, force: bool, guard: &Guard) -> Outcome {
         let left = wait_for_exit(target, &live, Duration::from_secs(3));
         return if left.is_empty() {
             let bytes = freed(&live, &left);
-            Outcome::Closed { message: format!("Freed {}", crate::engine::assess::fmt_bytes(bytes)), freed: bytes }
+            Outcome::Closed { message: format!("Freed {}", crate::engine::assess::fmt_bytes(bytes)), freed: bytes, disk: 0 }
         } else {
             Outcome::Failed { message: errors.first().cloned().unwrap_or_else(|| "Still running".to_string()) }
         };
@@ -225,7 +226,7 @@ pub fn close(target: &ProcTarget, force: bool, guard: &Guard) -> Outcome {
     let left = wait_for_exit(target, &live, wait);
     if left.is_empty() {
         let bytes = freed(&live, &left);
-        Outcome::Closed { message: format!("Freed {}", crate::engine::assess::fmt_bytes(bytes)), freed: bytes }
+        Outcome::Closed { message: format!("Freed {}", crate::engine::assess::fmt_bytes(bytes)), freed: bytes, disk: 0 }
     } else {
         Outcome::StillRunning {
             message: if target.app_pid.is_some() {

@@ -10,17 +10,22 @@ pub struct Settings {
     pub launch_at_login: bool,
     /// Soft sound effects in sync with the animations.
     pub sounds: bool,
+    /// Global shortcut that opens Butters from anywhere ("" = off).
+    pub shortcut: String,
     /// Groups the user asked Butters to leave alone.
     pub ignored: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { alerts: true, launch_at_login: false, sounds: true, ignored: Vec::new() }
+        Settings { alerts: true, launch_at_login: false, sounds: true, shortcut: DEFAULT_SHORTCUT.to_string(), ignored: Vec::new() }
     }
 }
 
 const MAX_IGNORED: usize = 500;
+pub const DEFAULT_SHORTCUT: &str = "Alt+Super+B";
+/// The shortcuts the panel offers (shown as ⌥⌘B etc. on Mac, Ctrl+Alt+B on Windows).
+pub const SHORTCUTS: &[&str] = &["Alt+Super+B", "Control+Alt+B", "Alt+Super+Space", ""];
 
 impl Settings {
     pub fn path(config_dir: &Path) -> PathBuf {
@@ -50,6 +55,9 @@ impl Settings {
         self.ignored.retain(|k| !k.is_empty() && k.len() <= 1024);
         self.ignored.dedup();
         self.ignored.truncate(MAX_IGNORED);
+        if !SHORTCUTS.contains(&self.shortcut.as_str()) {
+            self.shortcut = DEFAULT_SHORTCUT.to_string();
+        }
         self
     }
 }
@@ -63,7 +71,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("butters-test-{}", std::process::id()));
         let path = Settings::path(&dir);
         assert_eq!(Settings::load(&path), Settings::default());
-        let s = Settings { alerts: false, launch_at_login: true, sounds: false, ignored: vec!["app:/x".into()] };
+        let s = Settings { alerts: false, launch_at_login: true, sounds: false, shortcut: "".into(), ignored: vec!["app:/x".into()] };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
         std::fs::write(&path, b"{not json").unwrap();
@@ -72,5 +80,13 @@ mod tests {
         std::fs::write(&path, br#"{"alerts": false}"#).unwrap();
         assert_eq!(Settings::load(&path), Settings { alerts: false, ..Settings::default() });
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unknown_shortcuts_fall_back_to_default() {
+        let s = Settings { shortcut: "Super+Q".into(), ..Settings::default() }.sanitized();
+        assert_eq!(s.shortcut, DEFAULT_SHORTCUT);
+        let off = Settings { shortcut: "".into(), ..Settings::default() }.sanitized();
+        assert_eq!(off.shortcut, "");
     }
 }

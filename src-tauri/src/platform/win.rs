@@ -65,6 +65,10 @@ fn visible_windows(pids: &[u32]) -> Vec<HWND> {
     state.found
 }
 
+pub fn responsible_pid(_pid: u32) -> Option<u32> {
+    None
+}
+
 pub fn ask_app_to_quit(_app_pid: u32, pids: &[u32]) -> Result<(), String> {
     let windows = visible_windows(pids);
     if windows.is_empty() {

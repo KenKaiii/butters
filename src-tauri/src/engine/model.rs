@@ -26,6 +26,10 @@ pub struct ProcInfo {
     /// Owned by the signed-in user (we never touch anyone else's processes).
     pub owned_by_user: bool,
     pub ports: Vec<u16>,
+    /// Steady memory growth (bytes, over seconds) seen by leak watch.
+    pub growth: Option<(u64, u64)>,
+    /// For virtual machines: the app macOS holds responsible (Docker, UTM...).
+    pub responsible: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -44,6 +48,7 @@ pub enum Kind {
     App,
     Process,
     DockerContainer,
+    DockerDisk,
     OllamaModel,
 }
 
@@ -71,4 +76,6 @@ pub struct Group {
     pub host_app: Option<String>,
     /// pid of the app group this runs inside, if any.
     pub host_root: Option<u32>,
+    /// Biggest steady memory growth among its processes.
+    pub growth: Option<(u64, u64)>,
 }

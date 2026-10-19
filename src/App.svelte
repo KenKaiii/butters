@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { flip } from "svelte/animate";
   import { Tween } from "svelte/motion";
-  import { api, type Notify, type Outcome, type Protected, type Smoothness, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
+  import { api, type Notify, type Outcome, type PortOwner, type Protected, type Smoothness, type ScanResult, type ServicesResult, type Settings, type Suggestion, type UpdateStatus } from "./lib/api";
   import { bytes } from "./lib/format";
   import Check from "./lib/Check.svelte";
   import Icon from "./lib/Icon.svelte";
@@ -46,6 +46,13 @@
   let sessionFreed = $state(0);
   let splash = $state(0);
   let smooth = $state<Smoothness | null>(null);
+  let statsTab = $state<"life" | "fan">("life");
+  // End-of-day sweep: the ids the backend says are safe to close together.
+  let sweepIds = $state<string[]>([]);
+  // "What's on port …?"
+  let portQuery = $state("");
+  let portResult = $state<PortOwner[] | null>(null);
+  let portBusy = $state(false);
   let notify = $state<Notify>("on");
   let updating = $state(false);
   // Rows pour in one after another only on the first fill.
@@ -87,15 +94,24 @@
     refreshing = true;
     error = null;
     // Docker stats can take a few seconds; don't hold the list for them.
-    api.scanServices().then((r) => (services = r)).catch(() => (services = null));
+    api
+      .scanServices()
+      .then((r) => (services = r))
+      .catch(() => (services = null))
+      .finally(() => void loadSweep());
     try {
       scan = await api.scan();
+      void loadSweep();
       if (firstFill) setTimeout(() => (firstFill = false), 1200);
     } catch (e) {
       error = String(e);
     } finally {
       refreshing = false;
     }
+  }
+
+  async function loadSweep() {
+    sweepIds = await api.sweepTargets().catch(() => []);
   }
 
   async function closeOne(s: Suggestion, force: boolean): Promise<Outcome> {
@@ -227,13 +243,50 @@
     await refresh();
   }
 
-  function openStats() {
+  function openStats(tab: "life" | "fan" = "life") {
+    statsTab = tab;
     view = "stats";
     void loadSmoothness();
   }
 
   async function loadSmoothness() {
     smooth = await api.smoothness().catch(() => smooth);
+  }
+
+  /** Sweep: tick exactly the safe set, then use the normal Close confirm. */
+  function startSweep() {
+    const ids = new Set(sweepIds);
+    for (const s of items) overrides[s.key] = ids.has(s.id);
+    confirming = true;
+    api.sound("tick");
+  }
+
+  async function lookupPort(e: SubmitEvent) {
+    e.preventDefault();
+    const port = Number(portQuery.trim().replace(/^:/, ""));
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      portResult = [];
+      return;
+    }
+    portBusy = true;
+    try {
+      portResult = await api.port(port);
+    } catch {
+      portResult = [];
+    } finally {
+      portBusy = false;
+    }
+  }
+
+  async function closePortOwner(o: PortOwner) {
+    if (!o.id) return;
+    const s = items.find((x) => x.id === o.id);
+    if (s) {
+      overrides[s.key] = true;
+      portResult = null;
+      portQuery = "";
+      await slice(s);
+    }
   }
 
   async function checkUpdate() {
@@ -358,6 +411,15 @@
         ? 0.5
         : 0,
   );
+  const isMac = /Mac/.test(navigator.platform) || /Macintosh/.test(navigator.userAgent);
+  const SHORTCUTS = ["Alt+Super+B", "Control+Alt+B", "Alt+Super+Space", ""];
+  function shortcutLabel(k: string) {
+    if (!k) return "Off";
+    const mac: Record<string, string> = { Alt: "⌥", Super: "⌘", Control: "⌃", Shift: "⇧", Space: "Space" };
+    const win: Record<string, string> = { Alt: "Alt", Super: "Win", Control: "Ctrl", Shift: "Shift", Space: "Space" };
+    const parts = k.split("+").map((p) => (isMac ? mac : win)[p] ?? p);
+    return isMac ? parts.join("") : parts.join("+");
+  }
   const footState = $derived(running ? "running" : confirming ? "confirm" : selected.length ? "ready" : "idle");
 </script>
 
@@ -377,7 +439,7 @@
           <button class="ghost" type="button" aria-label="Refresh" title="Refresh" onclick={refresh} disabled={refreshing || running}>
             <span class="spin" class:spinning={refreshing}><Icon name="refresh" /></span>
           </button>
-          <button class="ghost" type="button" aria-label="Stats" title="Stats" onclick={openStats}>
+          <button class="ghost" type="button" aria-label="Stats" title="Stats" onclick={() => openStats()}>
             <Icon name="chart" />
           </button>
           <button class="ghost" type="button" aria-label="Settings" title="Settings" onclick={openSettings}>
@@ -394,7 +456,9 @@
           {memState}
           cpuState={cpuState as "ok" | "warn" | "bad"}
         />
-        {#if heat}<p class="heat" in:pour>{heat}</p>{/if}
+        {#if heat || cpuState === "bad"}
+          <button class="heat" type="button" in:pour onclick={() => openStats("fan")}>{heat ?? "CPU is pinned"} · see why</button>
+        {/if}
       </div>
 
       {#if notify !== "on"}
@@ -424,9 +488,16 @@
             {#each [0, 1, 2] as i (i)}<div class="pat" style:animation-delay="{i * 140}ms"></div>{/each}
           </div>
         {:else}
-          <h2 class="section">
-            {items.length ? `Could close · ${items.length}` : "Nothing to close"}
-          </h2>
+          <div class="section-row">
+            <h2 class="section">
+              {items.length ? `Could close · ${items.length}` : "Nothing to close"}
+            </h2>
+            {#if sweepIds.length >= 2 && !running}
+              <button class="link-btn" type="button" title="Leftovers, idle agents and idle containers. You confirm first." onclick={startSweep} in:dissolve>
+                Sweep {sweepIds.length}
+              </button>
+            {/if}
+          </div>
           {#if items.length}
             <ul class="list">
               {#each items as s, i (s.key)}
@@ -458,6 +529,29 @@
               <Toast />
             {/if}
             {#if scan.watchedSecs < 3600}<p class="empty-note muted" in:pour>Idle apps show after 1 h</p>{/if}
+          {/if}
+
+          <form class="port" onsubmit={lookupPort}>
+            <label class="port-label" for="port-q">What's on port</label>
+            <input id="port-q" class="port-input" inputmode="numeric" autocomplete="off" placeholder="3000" maxlength="6" bind:value={portQuery} oninput={() => (portResult = null)} />
+            <button class="btn small" type="submit" disabled={portBusy || !portQuery.trim()}>{portBusy ? "…" : "Look"}</button>
+          </form>
+          {#if portResult}
+            <ul class="port-result" in:pour={{ y: -4 }}>
+              {#each portResult as o, i (i)}
+                <li>
+                  <span class="p-title" title={o.detail ?? o.title}>{o.title}</span>
+                  <span class="p-reason muted">{o.protected ?? (o.detail ?? "")}</span>
+                  {#if o.id}
+                    <button class="btn small" type="button" onclick={() => closePortOwner(o)}>Close</button>
+                  {:else}
+                    <span class="num">{o.memory ? bytes(o.memory) : ""}</span>
+                  {/if}
+                </li>
+              {:else}
+                <li><span class="p-title muted">Nothing on that port</span></li>
+              {/each}
+            </ul>
           {/if}
 
           {#if scan.protected.length}
@@ -527,7 +621,7 @@
               <button class="btn primary" type="button" onclick={() => (confirming = true)}>Close {selected.length}</button>
             {:else}
               {#if smooth && (smooth.score !== null || smooth.freedWeek > 0)}
-                <button class="bar-text smooth-line" type="button" title="See everything Butters has freed" onclick={openStats}>
+                <button class="bar-text smooth-line" type="button" title="See everything Butters has freed" onclick={() => openStats()}>
                   {#if smooth.score !== null}<span>Buttery <strong>{smooth.score}</strong></span>{/if}
                   {#if smooth.freedWeek > 0}<span class="muted">· {bytes(smooth.freedWeek)} this week</span>{/if}
                 </button>
@@ -546,7 +640,7 @@
       </footer>
     </section>
   {:else if view === "stats"}
-    <StatsView {smooth} onBack={() => (view = "main")} />
+    <StatsView {smooth} tab={statsTab} onBack={() => (view = "main")} />
   {:else}
     <section class="view" aria-label="Settings" in:pour={{ y: -6 }} out:dissolve={{ duration: 220 }}>
       <header class="head">
@@ -572,6 +666,17 @@
               <span class="muted">Soft, in sync with animations</span>
             </label>
             <Check id="set-sounds" variant="switch" checked={s.sounds} onchange={(on) => saveSettings({ ...s, sounds: on }).then(() => on && api.sound("tick"))} />
+          </div>
+          <div class="setting" in:pour={{ delay: 85 }}>
+            <label class="setting-text" for="set-shortcut">
+              <strong>Shortcut</strong>
+              <span class="muted">Open Butters from anywhere</span>
+            </label>
+            <select id="set-shortcut" class="select" value={s.shortcut} onchange={(e) => saveSettings({ ...s, shortcut: e.currentTarget.value })}>
+              {#each SHORTCUTS as k (k)}
+                <option value={k}>{shortcutLabel(k)}</option>
+              {/each}
+            </select>
           </div>
           <div class="setting" in:pour={{ delay: 100 }}>
             <label class="setting-text" for="set-login">
@@ -939,10 +1044,117 @@
   }
   .heat {
     grid-column: 1 / -1;
+    justify-self: start;
     margin: 6px 0 0;
-    font-size: 12px;
+    padding: 0 0 0 8px;
+    border: 0;
     border-inline-start: 2px solid var(--danger-fill);
-    padding-inline-start: 8px;
+    background: none;
+    color: var(--ink);
+    font: inherit;
+    font-size: 12px;
+    text-align: start;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .heat:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .section-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .link-btn {
+    margin-inline-end: var(--inset);
+    padding: 2px 8px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--surface-soft);
+    color: var(--ink);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 1.3;
+    cursor: pointer;
+    transition: background-color var(--t-soft) var(--butter-ease);
+  }
+  .link-btn:hover {
+    background: var(--butter-hi);
+  }
+
+  /* What's on port … */
+  .port {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 10px var(--inset) 4px;
+  }
+  .port-label {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .port-input {
+    min-width: 0;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--control-line);
+    border-radius: var(--r-control);
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+    font-size: 12.5px;
+    line-height: 1.25;
+  }
+  .port-input::placeholder {
+    color: var(--muted);
+  }
+  .port-result {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 4px;
+  }
+  .port-result li {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    padding: 2px var(--inset);
+    font-size: 12px;
+  }
+  .port-result .p-title,
+  .port-result .p-reason {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .port-result .p-title {
+    font-weight: 600;
+  }
+
+  .select {
+    height: 28px;
+    padding: 0 28px 0 10px;
+    border: 1px solid var(--control-line);
+    border-radius: var(--r-control);
+    background:
+      url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236b6152' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+        no-repeat right 10px center,
+      var(--surface);
+    color: var(--ink);
+    font: inherit;
+    font-size: 12.5px;
+    line-height: 1.25;
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
   }
 
   .scroll {

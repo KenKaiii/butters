@@ -148,7 +148,7 @@
     <span class="title">{s.title}</span>
     <span class="meta">{s.reason}{#if aside}{" · "}<span class:flag={!!s.note || !s.polite}>{aside}</span>{/if}</span>
   </label>
-  <span class="mem">{bytes(s.memory)}</span>
+  <span class="mem" title={s.disk ? "Disk space" : "Memory"}>{s.disk ? `${bytes(s.disk)} disk` : bytes(s.memory)}</span>
   <button class="ghost" type="button" aria-label={`Ignore ${s.title}`} title="Ignore" disabled={pending} onclick={onIgnore}>
     <Icon name="eyeOff" />
   </button>

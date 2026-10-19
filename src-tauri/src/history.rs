@@ -52,6 +52,8 @@ pub struct Lifetime {
     /// Closed count per kind ("dev_server", "agent_session", ...).
     pub by_kind: BTreeMap<String, u32>,
     pub best_day: u64,
+    /// Disk given back (Docker build cache, untagged images).
+    pub disk_freed: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -127,6 +129,16 @@ impl History {
             Level::Busy => d.busy += 1,
             Level::Strained => d.strained += 1,
         }
+    }
+
+    pub fn record_disk(&mut self, bytes: u64) {
+        let lt = &mut self.lifetime;
+        if lt.since == 0 {
+            lt.since = now_secs();
+        }
+        lt.disk_freed = lt.disk_freed.saturating_add(bytes);
+        *lt.by_kind.entry("docker_disk".to_string()).or_default() += 1;
+        lt.closed += 1;
     }
 
     pub fn record_freed(&mut self, day: u64, bytes: u64, kind: &str) {

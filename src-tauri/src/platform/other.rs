@@ -16,6 +16,9 @@ pub fn thermal_state() -> Thermal {
 pub fn terminal_idle(_pids: &[u32]) -> HashMap<u32, u64> {
     HashMap::new()
 }
+pub fn responsible_pid(_pid: u32) -> Option<u32> {
+    None
+}
 pub fn ask_app_to_quit(app_pid: u32, _pids: &[u32]) -> Result<(), String> {
     ask_process_to_stop(app_pid)
 }

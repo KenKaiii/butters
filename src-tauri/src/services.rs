@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Container {
     pub id: String,
     pub name: String,
@@ -16,6 +16,12 @@ pub struct Container {
     pub cpu: f32,
     pub memory: u64,
     pub status: String,
+    /// Compose project, if it belongs to one.
+    pub project: Option<String>,
+    /// Unix seconds when it was started.
+    pub started_at: Option<u64>,
+    /// Network + disk bytes moved since it started (cumulative).
+    pub io: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +107,8 @@ struct PsLine {
     image: String,
     #[serde(rename = "Status", default)]
     status: String,
+    #[serde(rename = "Labels", default)]
+    labels: String,
 }
 
 #[derive(Deserialize)]
@@ -111,31 +119,83 @@ struct StatsLine {
     cpu: String,
     #[serde(rename = "MemUsage", default)]
     mem: String,
+    #[serde(rename = "NetIO", default)]
+    net: String,
+    #[serde(rename = "BlockIO", default)]
+    block: String,
 }
 
-/// "12.5MiB / 7.6GiB" -> bytes of the first number.
-fn parse_mem(s: &str) -> u64 {
-    let first = s.split('/').next().unwrap_or("").trim();
-    let idx = first.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(first.len());
-    let (num, unit) = first.split_at(idx);
+#[derive(Deserialize)]
+struct DfLine {
+    #[serde(rename = "Type")]
+    kind: String,
+    #[serde(rename = "Reclaimable", default)]
+    reclaimable: String,
+}
+
+/// One Docker size: "12.5MiB", "1.2kB", "3.4GB", "0B". Docker prints memory in
+/// binary units (MiB) and traffic/disk in decimal ones (kB, MB, GB).
+pub fn parse_size(s: &str) -> u64 {
+    let s = s.trim();
+    let idx = s.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(s.len());
+    let (num, unit) = s.split_at(idx);
     let n: f64 = num.trim().parse().unwrap_or(0.0);
     let mult = match unit.trim() {
         "B" => 1.0,
-        "KiB" | "kB" | "KB" => 1024.0,
-        "MiB" | "MB" => 1024.0 * 1024.0,
-        "GiB" | "GB" => 1024.0 * 1024.0 * 1024.0,
-        "TiB" | "TB" => 1024.0_f64.powi(4),
+        "kB" | "KB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0_f64.powi(3),
+        "TiB" => 1024.0_f64.powi(4),
         _ => 0.0,
     };
-    (n * mult) as u64
+    (n * mult).round() as u64
+}
+
+/// "12.5MiB / 7.6GiB" -> the first number (memory used).
+fn parse_mem(s: &str) -> u64 {
+    parse_size(s.split('/').next().unwrap_or(""))
+}
+
+/// "1.2kB / 3.4MB" -> both sides added (in + out).
+fn parse_pair_sum(s: &str) -> u64 {
+    s.split('/').map(parse_size).sum()
+}
+
+/// "2026-10-12T03:04:05.123456789Z" -> Unix seconds.
+fn parse_started(s: &str) -> Option<u64> {
+    let secs = parse_rfc3339_secs(s.trim())?;
+    (secs > 0).then_some(secs as u64)
+}
+
+fn compose_project(labels: &str) -> Option<String> {
+    labels
+        .split(',')
+        .find_map(|kv| kv.strip_prefix("com.docker.compose.project="))
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+}
+
+/// "Total reclaimed space: 1.234GB" (or buildx's "Total:\t1.2GB") -> bytes.
+fn parse_reclaimed(out: &str) -> u64 {
+    out.lines()
+        .rev()
+        .find_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("Total reclaimed space:").or_else(|| l.strip_prefix("Total:")).map(parse_size)
+        })
+        .unwrap_or(0)
 }
 
 pub fn is_container_id(id: &str) -> bool {
     (12..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-/// Running containers with their CPU and memory. `None` when Docker isn't
-/// installed or its engine isn't running.
+/// Running containers with CPU, memory, traffic and start time. `None` when
+/// Docker isn't installed or its engine isn't running.
 pub fn docker_containers() -> Option<Vec<Container>> {
     let docker = find_docker()?;
     let ps = run(&docker, &["ps", "--no-trunc", "--format", "{{json .}}"], Duration::from_secs(4)).ok()?;
@@ -143,7 +203,14 @@ pub fn docker_containers() -> Option<Vec<Container>> {
         .lines()
         .filter_map(|l| serde_json::from_str::<PsLine>(l).ok())
         .filter(|c| is_container_id(&c.id))
-        .map(|c| Container { id: c.id, name: c.names, image: c.image, cpu: 0.0, memory: 0, status: c.status })
+        .map(|c| Container {
+            project: compose_project(&c.labels),
+            id: c.id,
+            name: c.names,
+            image: c.image,
+            status: c.status,
+            ..Default::default()
+        })
         .collect();
     if containers.is_empty() {
         return Some(containers);
@@ -153,10 +220,65 @@ pub fn docker_containers() -> Option<Vec<Container>> {
             if let Some(c) = containers.iter_mut().find(|c| c.id.starts_with(&s.id) || s.id.starts_with(&c.id)) {
                 c.cpu = s.cpu.trim_end_matches('%').trim().parse().unwrap_or(0.0);
                 c.memory = parse_mem(&s.mem);
+                c.io = parse_pair_sum(&s.net) + parse_pair_sum(&s.block);
             }
         }
     }
+    // Start times, in one call. Ids are validated hex, passed as arguments.
+    let mut args = vec!["inspect", "--format", "{{.Id}} {{.State.StartedAt}}"];
+    args.extend(containers.iter().map(|c| c.id.as_str()));
+    if let Ok(out) = run(&docker, &args, Duration::from_secs(6)) {
+        for line in out.lines() {
+            if let Some((id, started)) = line.split_once(' ')
+                && let Some(c) = containers.iter_mut().find(|c| c.id == id) {
+                    c.started_at = parse_started(started);
+                }
+        }
+    }
     Some(containers)
+}
+
+/// What Docker could give back on disk.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DockerDisk {
+    /// Build cache Docker would rebuild on demand.
+    pub build_cache: u64,
+    /// Untagged ("dangling") images left over from rebuilds.
+    pub dangling_images: u64,
+}
+
+pub fn docker_disk() -> Option<DockerDisk> {
+    let docker = find_docker()?;
+    let df = run(&docker, &["system", "df", "--format", "{{json .}}"], Duration::from_secs(15)).ok()?;
+    let mut disk = DockerDisk::default();
+    for row in df.lines().filter_map(|l| serde_json::from_str::<DfLine>(l).ok()) {
+        if row.kind == "Build Cache" {
+            disk.build_cache = parse_size(row.reclaimable.split('(').next().unwrap_or(""));
+        }
+    }
+    if let Ok(out) = run(&docker, &["images", "--filter", "dangling=true", "--format", "{{.Size}}"], Duration::from_secs(8)) {
+        disk.dangling_images = out.lines().map(parse_size).sum();
+    }
+    Some(disk)
+}
+
+/// Clears build cache older than 3 days (recent cache stays warm). Returns bytes freed.
+pub fn docker_prune_build_cache() -> Result<u64, String> {
+    let docker = find_docker().ok_or("Docker isn't available")?;
+    run(&docker, &["builder", "prune", "--force", "--filter", "until=72h"], Duration::from_secs(120)).map(|o| parse_reclaimed(&o))
+}
+
+/// Removes untagged images only (never ones with a name). Returns bytes freed.
+pub fn docker_prune_dangling_images() -> Result<u64, String> {
+    let docker = find_docker().ok_or("Docker isn't available")?;
+    run(&docker, &["image", "prune", "--force"], Duration::from_secs(120)).map(|o| parse_reclaimed(&o))
+}
+
+/// How much memory Docker's VM is allowed to use, if Docker reports it.
+pub fn docker_vm_memory() -> Option<u64> {
+    let docker = find_docker()?;
+    let out = run(&docker, &["info", "--format", "{{.MemTotal}}"], Duration::from_secs(4)).ok()?;
+    out.trim().parse().ok().filter(|n: &u64| *n > 0)
 }
 
 /// `docker stop`: Docker's own polite stop (SIGTERM, then kill after 10 s).
@@ -293,5 +415,33 @@ mod tests {
         assert_eq!(parse_rfc3339_secs("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_rfc3339_secs("2026-10-19T00:00:00Z"), Some(1_792_368_000));
         assert_eq!(parse_rfc3339_secs("2026-10-19T02:00:00.5+02:00"), Some(1_792_368_000));
+    }
+
+    #[test]
+    fn docker_sizes_and_traffic() {
+        assert_eq!(parse_size("0B"), 0);
+        assert_eq!(parse_size("1.5kB"), 1500);
+        assert_eq!(parse_size("2MB"), 2_000_000);
+        assert_eq!(parse_size("1GiB"), 1 << 30);
+        assert_eq!(parse_mem("12.5MiB / 7.6GiB"), (12.5 * 1024.0 * 1024.0) as u64);
+        assert_eq!(parse_pair_sum("1.2kB / 3.4MB"), 1200 + 3_400_000);
+        assert_eq!(parse_reclaimed("Deleted build cache objects:\nabc\n\nTotal reclaimed space: 1.25GB\n"), 1_250_000_000);
+        assert_eq!(parse_reclaimed("ID\tRECLAIMABLE\nx\ttrue\nTotal:\t300MB"), 300_000_000);
+        assert_eq!(parse_reclaimed("Total reclaimed space: 0B"), 0);
+        assert_eq!(compose_project("com.docker.compose.service=db,com.docker.compose.project=shop"), Some("shop".into()));
+        assert_eq!(compose_project(""), None);
+        let started = parse_started("2026-10-12T03:04:05.123456789Z").unwrap();
+        assert_eq!(parse_started("0001-01-01T00:00:00Z"), None);
+        assert!(started > 1_790_000_000);
+    }
+
+    #[test]
+    fn docker_json_lines_parse() {
+        let stats = r#"{"BlockIO":"4.1MB / 0B","CPUPerc":"0.02%","Container":"abc","ID":"0123456789ab","MemPerc":"0.5%","MemUsage":"38.2MiB / 7.6GiB","Name":"db","NetIO":"1.2kB / 860B","PIDs":"7"}"#;
+        let s: StatsLine = serde_json::from_str(stats).unwrap();
+        assert_eq!(parse_pair_sum(&s.net) + parse_pair_sum(&s.block), 1200 + 860 + 4_100_000);
+        let df = r#"{"Active":"0","Reclaimable":"12.3GB (100%)","Size":"12.3GB","TotalCount":"40","Type":"Build Cache"}"#;
+        let d: DfLine = serde_json::from_str(df).unwrap();
+        assert_eq!(parse_size(d.reclaimable.split('(').next().unwrap()), 12_300_000_000);
     }
 }

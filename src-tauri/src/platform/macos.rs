@@ -87,6 +87,26 @@ pub fn terminal_idle(pids: &[u32]) -> HashMap<u32, u64> {
     out
 }
 
+pub fn responsible_pid(pid: u32) -> Option<u32> {
+    use std::sync::OnceLock;
+    type Responsible = unsafe extern "C" fn(libc::pid_t) -> libc::pid_t;
+    // A long-standing libsystem function (used by Activity Monitor) that has no
+    // public header; looked up at runtime so a future macOS without it just
+    // means "unknown" instead of a crash.
+    static FUNC: OnceLock<Option<Responsible>> = OnceLock::new();
+    let f = FUNC.get_or_init(|| {
+        // SAFETY: dlsym with RTLD_DEFAULT and a valid C string; a null result means absent.
+        let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"responsibility_get_pid_responsible_for_pid".as_ptr()) };
+        // SAFETY: the symbol has this C signature (pid_t -> pid_t) on every macOS that exports it.
+        (!sym.is_null()).then(|| unsafe { std::mem::transmute::<*mut libc::c_void, Responsible>(sym) })
+    });
+    let f = (*f)?;
+    let raw = libc::pid_t::try_from(pid).ok()?;
+    // SAFETY: plain call with a pid; returns -1 on failure.
+    let r = unsafe { f(raw) };
+    (r > 1 && r != raw).then_some(r as u32)
+}
+
 pub fn ask_app_to_quit(app_pid: u32, _pids: &[u32]) -> Result<(), String> {
     autoreleasepool(|_| {
         let app = NSRunningApplication::runningApplicationWithProcessIdentifier(app_pid as libc::pid_t);

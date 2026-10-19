@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fan-culprits"
+description = "Enables the fan_culprits command without any pre-configured scope."
+commands.allow = ["fan_culprits"]
+
+[[permission]]
+identifier = "deny-fan-culprits"
+description = "Denies the fan_culprits command without any pre-configured scope."
+commands.deny = ["fan_culprits"]

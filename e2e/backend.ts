@@ -6,7 +6,11 @@
 export interface FakeState {
   calls: { cmd: string; args: unknown }[];
   sounds: string[];
-  settings: { alerts: boolean; launch_at_login: boolean; sounds: boolean; ignored: string[] };
+  settings: { alerts: boolean; launch_at_login: boolean; sounds: boolean; shortcut: string; ignored: string[] };
+  services: unknown[];
+  sweep: string[];
+  fan: { culprits: { label: string; avg: number; peak: number; series: number[] }[]; minutes: number };
+  ports: Record<string, unknown[]>;
   notify: "ask" | "off" | "on";
   update: { current: string; available: string | null; checking: boolean; installing: boolean; error: string | null };
   smoothness: {
@@ -28,7 +32,20 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
   const state = {
     calls: [] as { cmd: string; args: unknown }[],
     sounds: [] as string[],
-    settings: { alerts: true, launch_at_login: false, sounds: true, ignored: [] as string[] },
+    settings: { alerts: true, launch_at_login: false, sounds: true, shortcut: "Alt+Super+B", ignored: [] as string[] },
+    services: [] as any[],
+    sweep: ["a", "b"] as string[],
+    fan: {
+      culprits: [
+        { label: "Google Chrome", avg: 62, peak: 140, series: [40, 55, 70, 140, 60, 50, 48, 66, 70, 61] },
+        { label: "node", avg: 31, peak: 98, series: [10, 20, 98, 30, 25, 40, 22, 20, 33, 12] },
+      ],
+      minutes: 10,
+    },
+    ports: {
+      "5173": [{ port: 5173, title: "Vite dev server", detail: "~/app · :5173", id: "a", memory: 400 * MB, protected: null }],
+      "5432": [{ port: 5432, title: "Postgres.app", detail: null, id: null, memory: 120 * MB, protected: "Used 3 min ago" }],
+    } as Record<string, unknown[]>,
     notify: "on",
     update: { current: "0.1.0", available: null, checking: false, installing: false, error: null },
     closeAs: {} as Record<string, string>,
@@ -54,9 +71,9 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
     stats: { memUsed, memTotal: 24 * GB, swapUsed: 0, cpu, cores: 10, pressure: "normal", thermal: "nominal" },
     level: state.level,
     suggestions: (init.suggestions as unknown[]) ?? [
-      { id: "a", key: "dev:vite", kind: "dev_server", title: "Vite dev server", detail: "~/app · :5173", reason: "Terminal closed", note: null, memory: 400 * MB, cpu: 0, ports: [5173], recommended: true, polite: true, verb: "Stop" },
-      { id: "b", key: "agent:claude", kind: "agent_session", title: "Claude Code session", detail: "~/api", reason: "Idle 3 h", note: null, memory: 600 * MB, cpu: 4, ports: [], recommended: true, polite: true, verb: "Stop" },
-      { id: "c", key: "app:chrome", kind: "browser", title: "Google Chrome", detail: null, reason: "Unused 2 h", note: null, memory: 2 * GB, cpu: 0, ports: [], recommended: false, polite: true, verb: "Quit" },
+      { id: "a", key: "dev:vite", kind: "dev_server", title: "Vite dev server", detail: "~/app · :5173", reason: "Terminal closed", note: null, memory: 400 * MB, cpu: 0, ports: [5173], recommended: true, polite: true, verb: "Stop", disk: 0 },
+      { id: "b", key: "agent:claude", kind: "agent_session", title: "Claude Code session", detail: "~/api", reason: "Idle 3 h", note: null, memory: 600 * MB, cpu: 4, ports: [], recommended: true, polite: true, verb: "Stop", disk: 0 },
+      { id: "c", key: "app:chrome", kind: "browser", title: "Google Chrome", detail: null, reason: "Unused 2 h", note: null, memory: 2 * GB, cpu: 0, ports: [], recommended: false, polite: true, verb: "Quit", disk: 0 },
     ],
     protected: (init.protectedItems as any[]) ?? [
       { id: "x1-0", key: "app:ghostty#1", verb: "Quit", title: "Ghostty", kind: "terminal", memory: 300 * MB, cpu: 2, reason: "In use" },
@@ -70,7 +87,10 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
 
   const handlers: Record<string, (args: any) => unknown> = {
     scan: () => copy(scan),
-    scan_services: () => ({ suggestions: [], docker: "off", ollama: "off" }),
+    scan_services: () => ({ suggestions: copy(state.services), docker: state.services.length ? "running" : "off", ollama: "off" }),
+    sweep_targets: () => copy(state.sweep),
+    fan_culprits: () => copy(state.fan),
+    port_lookup: ({ port }) => copy(state.ports[String(port)] ?? []),
     live_stats: () => {
       // Moves every call so tests can see the meters are live.
       memUsed -= 256 * MB;
@@ -80,10 +100,15 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       return { stats: copy(scan.stats), level: state.level };
     },
     close_item: ({ id, force }) => {
+      const svc = (state.services as any[]).find((x) => x.id === id);
+      if (svc) {
+        state.services = state.services.filter((x: any) => x.id !== id);
+        return { status: "closed", message: "Cleared", freed: svc.memory, disk: svc.disk ?? 0 };
+      }
       const pi = (scan.protected as any[]).findIndex((x) => x.id === id);
       if (pi >= 0) {
         const [p] = scan.protected.splice(pi, 1) as any[];
-        return { status: "closed", message: "Freed", freed: p.memory };
+        return { status: "closed", message: "Freed", freed: p.memory, disk: 0 };
       }
       const s = scan.suggestions.find((x: any) => x.id === id) as any;
       if (!s) return { status: "refused", message: "List changed. Refresh." };
@@ -94,7 +119,8 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
         lt.freed += s.memory;
         lt.closed += 1;
         lt.by_kind[s.kind] = (lt.by_kind[s.kind] ?? 0) + 1;
-        return { status: "closed", message: "Freed", freed: s.memory };
+        state.sweep = state.sweep.filter((x) => x !== id);
+        return { status: "closed", message: "Freed", freed: s.memory, disk: 0 };
       }
       if (as === "needs_force") return { status: "needs_force", message: "No window, force close only" };
       return { status: "still_running", message: "Still open, may be asking to save" };

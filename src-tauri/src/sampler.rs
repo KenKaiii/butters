@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, Uid, UpdateKind};
 
+use crate::engine::classify::{app_name, app_root};
 use crate::engine::model::ProcInfo;
+use crate::trends::Reading;
 use crate::platform::{self, Pressure, Thermal};
 
 /// A process counts as active when it used at least this much of one core
@@ -62,7 +64,40 @@ impl Sampler {
     /// Cheap refresh: CPU time and memory for every process, plus totals.
     /// Runs about once a minute in the background.
     pub fn sample(&mut self) {
-        self.refresh(ProcessRefreshKind::nothing().with_cpu().with_memory().without_tasks());
+        // exe and owner are fetched once per process, then reused.
+        self.refresh(
+            ProcessRefreshKind::nothing()
+                .with_cpu()
+                .with_memory()
+                .with_exe(UpdateKind::OnlyIfNotSet)
+                .with_user(UpdateKind::OnlyIfNotSet)
+                .without_tasks(),
+        );
+        if self.my_uid.is_none() {
+            self.my_uid = self.sys.process(Pid::from_u32(self.self_pid)).and_then(|p| p.user_id().cloned());
+        }
+    }
+
+    /// The user's own processes as of the last refresh, for leak watch and
+    /// the fan view. App helpers are labelled with their app's name.
+    pub fn readings(&self) -> Vec<Reading> {
+        let mut out = Vec::new();
+        for (pid, p) in self.sys.processes() {
+            let owned = matches!((&self.my_uid, p.user_id()), (Some(me), Some(them)) if me == them);
+            if !owned || pid.as_u32() == self.self_pid {
+                continue;
+            }
+            let key = (pid.as_u32(), p.start_time());
+            let cpu = self.activity.get(&key).map(|a| a.cpu_pct).unwrap_or(0.0);
+            let label = p
+                .exe()
+                .map(|e| e.to_string_lossy().into_owned())
+                .and_then(|e| app_root(&e))
+                .map(|root| app_name(&root))
+                .unwrap_or_else(|| p.name().to_string_lossy().into_owned());
+            out.push(Reading { pid: key.0, start: key.1, label, memory: p.memory(), cpu });
+        }
+        out
     }
 
     fn refresh(&mut self, kind: ProcessRefreshKind) {
@@ -124,7 +159,7 @@ impl Sampler {
         let tty_idle = platform::terminal_idle(&pids);
         let now = Instant::now();
 
-        let mut out = Vec::with_capacity(pids.len());
+        let mut out: Vec<ProcInfo> = Vec::with_capacity(pids.len());
         for (pid, p) in self.sys.processes() {
             let pid = pid.as_u32();
             let key = (pid, p.start_time());
@@ -160,7 +195,16 @@ impl Sampler {
                 idle_is_lower_bound: lower_bound,
                 owned_by_user: owned,
                 ports: ports.get(&pid).cloned().unwrap_or_default(),
+                growth: None,
+                responsible: None,
             });
+        }
+        // Virtual machines run as system services; count them under the app
+        // that started them (Docker Desktop's VM holds most of its memory).
+        for p in out.iter_mut() {
+            if p.name.starts_with("com.apple.Virtualization.VirtualMachine") {
+                p.responsible = platform::responsible_pid(p.pid);
+            }
         }
         out
     }

@@ -3,12 +3,33 @@
   // up like butter softening; the per-kind bars pour in one after another.
   import { onMount } from "svelte";
   import { Tween } from "svelte/motion";
-  import type { Smoothness } from "./api";
+  import { api, type Culprit, type Smoothness } from "./api";
   import { bytes } from "./format";
   import Icon from "./Icon.svelte";
   import { butterEase, ms, pour } from "./motion";
 
-  let { smooth, onBack }: { smooth: Smoothness | null; onBack: () => void } = $props();
+  let { smooth, onBack, tab: initialTab = "life" }: { smooth: Smoothness | null; onBack: () => void; tab?: "life" | "fan" } = $props();
+
+  // svelte-ignore state_referenced_locally
+  let tab = $state<"life" | "fan">(initialTab);
+  let fan = $state<{ culprits: Culprit[]; minutes: number } | null>(null);
+  async function loadFan() {
+    fan = await api.fan().catch(() => fan);
+  }
+  $effect(() => {
+    if (tab !== "fan") return;
+    void loadFan();
+    const t = setInterval(loadFan, 30_000);
+    return () => clearInterval(t);
+  });
+  const fanMax = $derived(Math.max(100, ...(fan?.culprits.flatMap((c) => c.series) ?? [0])));
+  /** A smooth sparkline path through the per-minute values. */
+  function spark(series: number[], w: number, h: number) {
+    if (!series.length) return "";
+    const step = series.length > 1 ? w / (series.length - 1) : w;
+    const pts = series.map((v, i) => [i * step, h - (Math.min(v, fanMax) / fanMax) * (h - 2) - 1]);
+    return pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+  }
 
   const KIND: Record<string, string> = {
     dev_server: "Dev servers",
@@ -18,6 +39,7 @@
     language_server: "Language servers",
     local_model: "Local models",
     ollama_model: "Ollama models",
+    docker_disk: "Docker clean-ups",
     docker_container: "Containers",
     container_runtime: "Docker",
     browser: "Browsers",
@@ -50,12 +72,35 @@
   <header class="head">
     <div class="status">
       <button class="ghost" type="button" aria-label="Back" title="Back" onclick={onBack}><Icon name="back" /></button>
-      <h1>Butters so far</h1>
+      <h1>{tab === "life" ? "Butters so far" : "What's making the fan spin"}</h1>
     </div>
   </header>
+  <div class="tabs" role="tablist" aria-label="Stats">
+    <button type="button" role="tab" aria-selected={tab === "life"} class:on={tab === "life"} onclick={() => (tab = "life")}>So far</button>
+    <button type="button" role="tab" aria-selected={tab === "fan"} class:on={tab === "fan"} onclick={() => (tab = "fan")}>Fan</button>
+  </div>
 
   <div class="scroll stats">
-    {#if !life || life.closed === 0}
+    {#if tab === "fan"}
+      {#if !fan}
+        <p class="empty muted">Reading…</p>
+      {:else if !fan.culprits.length}
+        <p class="empty muted" in:pour>All quiet{fan.minutes < 5 ? " so far" : ""}</p>
+      {:else}
+        <p class="window muted" in:pour>Last {fan.minutes} min, average CPU</p>
+        <ul class="fan">
+          {#each fan.culprits as c, i (c.label)}
+            <li in:pour={{ delay: 40 + i * 50 }} title={`${c.label}: avg ${Math.round(c.avg)}%, peak ${Math.round(c.peak)}% (100% = one core)`}>
+              <span class="f-label">{c.label}</span>
+              <svg class="f-spark" viewBox="0 0 90 18" preserveAspectRatio="none" aria-hidden="true">
+                <path d={spark(c.series, 90, 18)} />
+              </svg>
+              <span class="f-n">{Math.round(c.avg)}%</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {:else if !life || life.closed === 0}
       <p class="empty muted" in:pour>Nothing closed yet</p>
     {:else}
       <div class="hero" in:pour={{ delay: 40 }}>
@@ -74,7 +119,7 @@
         <div class="cell"><span class="muted">Closed</span><strong>{life.closed}</strong></div>
         <div class="cell"><span class="muted">Best day</span><strong>{bytes(life.best_day)}</strong></div>
         <div class="cell"><span class="muted">This week</span><strong>{bytes(smooth?.freedWeek ?? 0)}</strong></div>
-        <div class="cell"><span class="muted">Today</span><strong>{smooth?.score != null ? `Buttery ${smooth.score}` : "–"}</strong></div>
+        <div class="cell"><span class="muted">{life.disk_freed ? "Disk cleared" : "Today"}</span><strong>{life.disk_freed ? bytes(life.disk_freed) : smooth?.score != null ? `Buttery ${smooth.score}` : "–"}</strong></div>
       </div>
 
       {#if kinds.length}
@@ -105,7 +150,83 @@
   .head {
     display: flex;
     align-items: center;
-    padding: 14px var(--pad) 10px;
+    padding: 14px var(--pad) 6px;
+  }
+  .view {
+    grid-template-rows: auto auto 1fr !important;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 0 var(--pad) 8px;
+  }
+  .tabs button {
+    height: 28px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 14px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background-color var(--t-soft) var(--butter-ease),
+      color var(--t-soft) var(--butter-ease);
+  }
+  .tabs button:hover {
+    background: var(--surface-soft);
+    color: var(--ink);
+  }
+  .tabs button.on {
+    background: var(--ink);
+    color: var(--bg);
+  }
+  .window {
+    margin: 0;
+    padding: 4px var(--inset) 6px;
+    font-size: 12px;
+  }
+  .fan {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .fan li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 90px 44px;
+    align-items: center;
+    gap: 10px;
+    padding: 8px var(--inset);
+    border-radius: var(--r-pat);
+    font-size: 13px;
+  }
+  .fan li:hover {
+    background: var(--surface-soft);
+  }
+  .f-label {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .f-spark {
+    width: 90px;
+    height: 18px;
+    overflow: visible;
+  }
+  .f-spark path {
+    fill: none;
+    stroke: var(--butter-deep);
+    stroke-width: 1.6;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+  .f-n {
+    text-align: end;
+    font-weight: 600;
   }
   .status {
     display: flex;
