@@ -7,7 +7,7 @@ Each sound is timed to its animation (see src/lib/motion.ts and Row.svelte):
   tick     80 ms  checkbox: a tiny muted tap, like a knife on butter
   melt   1000 ms  row melts: a quiet pan sizzle that swells, then a drip at ~800 ms
   freed  1300 ms  savings card: a warm two-note chime (major sixth), round and low
-  close   220 ms  panel slumps away: a short, soft downward "fwip"
+  close   160 ms  panel melts away (260 ms): a short, soft downward "fwip"
 All are mixed far below full scale (peaks around -18 dBFS) so they never startle.
 No samples, no licences: everything is generated here.
 """
@@ -158,8 +158,8 @@ c5, a5 = 523.25, 880.0
 write("freed", mix((plop(0.14, 380, 160), 0, 0.6), (bell(1.1, c5, 0.35), ms(60), 0.8), (bell(1.1, a5, 0.4), ms(240), 0.55)), peak_db=-18)
 
 # close: short soft downward fwip, matching the 220 ms slump
-fw = sine_sweep(0.2, 360, 140, shape=1.4)
+fw = sine_sweep(0.16, 380, 150, shape=1.4)
 fwn = lowpass([random.uniform(-1, 1) for _ in fw], 900)
-write("close", lowpass([(a * 0.8 + b * 0.5) * g for a, b, g in zip(fw, fwn, env(len(fw), 0.01, 0.17, 2))], 1500), peak_db=-24)
+write("close", lowpass([(a * 0.8 + b * 0.5) * g for a, b, g in zip(fw, fwn, env(len(fw), 0.006, 0.14, 2))], 1500), peak_db=-24)
 
 print("sounds written to", OUT)

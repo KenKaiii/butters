@@ -742,24 +742,23 @@
     border-radius: var(--r-panel);
     box-shadow: var(--shadow), 0 0 0 1px var(--frame);
   }
-  /* Clicking away: the panel melts. Its contents soften first, the whole
-     pat warms and slumps down from the top while it spreads a touch, drips
-     gather along the bottom edge, then it all softens away. 520 ms, matched
-     by LEAVE in panel.rs and the "close" sound. */
+  /* Clicking away: a quick melt. Contents soften at once while the panel
+     slumps, spreads a touch and drips, then it's gone. 260 ms, matched by
+     LEAVE in panel.rs and the "close" sound. */
   :global(html.leaving) .panel {
-    animation: panel-melt 520ms cubic-bezier(0.45, 0, 0.7, 0.3) forwards;
+    animation: panel-melt 260ms cubic-bezier(0.4, 0, 0.8, 0.4) forwards;
     transform-origin: 50% 0%;
     overflow: visible;
     pointer-events: none;
   }
   :global(html.leaving) .panel > :global(*:not(.panel-drips)) {
-    animation: panel-content-melt 300ms var(--butter-ease) forwards;
+    animation: panel-content-melt 140ms var(--butter-ease) forwards;
   }
   :global(html.leaving) .panel-drips {
     opacity: 1;
   }
   :global(html.leaving) .panel-drips i {
-    animation: panel-drip 520ms cubic-bezier(0.5, 0, 0.6, 1) forwards;
+    animation: panel-drip 260ms cubic-bezier(0.5, 0, 0.6, 1) forwards;
   }
   @keyframes panel-melt {
     0% {
@@ -767,19 +766,14 @@
       filter: none;
       opacity: 1;
     }
-    30% {
-      transform: translateY(2px) scale(1.006, 0.985);
-      filter: saturate(1.05);
-      opacity: 1;
-    }
-    70% {
-      transform: translateY(14px) scale(1.03, 0.82);
-      filter: blur(2px);
-      opacity: 0.85;
+    40% {
+      transform: translateY(6px) scale(1.02, 0.9);
+      filter: blur(1px);
+      opacity: 0.9;
     }
     100% {
-      transform: translateY(30px) scale(1.06, 0.55);
-      filter: blur(8px);
+      transform: translateY(24px) scale(1.06, 0.6);
+      filter: blur(6px);
       opacity: 0;
     }
   }
@@ -816,21 +810,20 @@
   .panel-drips i:nth-child(2) {
     left: 38%;
     width: 7px;
-    animation-delay: 40ms !important;
+    animation-delay: 20ms !important;
   }
   .panel-drips i:nth-child(3) {
     left: 61%;
     width: 11px;
-    animation-delay: 20ms !important;
+    animation-delay: 10ms !important;
   }
   .panel-drips i:nth-child(4) {
     left: 83%;
     width: 7px;
-    animation-delay: 70ms !important;
+    animation-delay: 35ms !important;
   }
   @keyframes panel-drip {
-    0%,
-    20% {
+    0% {
       transform: scaleY(0);
     }
     100% {

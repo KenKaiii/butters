@@ -32,7 +32,7 @@ Only opacity, filter and transform animate (`src/lib/motion.ts`).
 | Numbers | Glide to new values (900 ms) instead of jumping |
 | Checkbox / switch | Fills softly, tick draws itself, slight squish on press |
 | Status pat | Firm with a passing shine; softens with a drip; slumps, browns and drips under strain |
-| Clicking away | The panel melts: content softens, it slumps and spreads, drips run off the bottom (520 ms) |
+| Clicking away | A quick melt: content softens, it slumps and spreads, drips run off the bottom (260 ms) |
 | Protected row | Memory dissolves into a Close button on hover; closing melts the row |
 | Loading | Three cream pats with a slow sheen |
 

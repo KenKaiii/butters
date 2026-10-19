@@ -217,10 +217,10 @@ test.describe("protected and leaving", () => {
     await page.evaluate(() => (window as any).__buttersLeave());
     const panel = page.locator(".panel");
     await expect(panel).toHaveCSS("animation-name", /panel-melt$/);
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(90);
     const mid = await panel.evaluate((el) => getComputedStyle(el).opacity);
     expect(Number(mid)).toBeGreaterThan(0.05); // still visible mid-melt, not blinked out
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(300);
     expect(Number(await panel.evaluate((el) => getComputedStyle(el).opacity))).toBeLessThan(0.05);
   });
 });
