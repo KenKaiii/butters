@@ -18,7 +18,9 @@
   } = $props();
 </script>
 
-<span class="pick is-{variant}" class:on={checked} class:disabled>
+<!-- A <label> wrapper: a click anywhere on the drawn control toggles the real
+     input natively, whatever sits on top (WebKit hit-tests the knob first). -->
+<label class="pick is-{variant}" class:on={checked} class:disabled>
   <input
     {id}
     type="checkbox"
@@ -35,11 +37,12 @@
   {:else}
     <span class="track" aria-hidden="true"><span class="knob"></span></span>
   {/if}
-</span>
+</label>
 
 <style>
   .pick {
     position: relative;
+    cursor: pointer;
     display: inline-grid;
     place-items: center;
     flex: none;
@@ -56,6 +59,11 @@
   }
   input:disabled {
     cursor: default;
+  }
+  .box,
+  .track,
+  .knob {
+    pointer-events: none;
   }
 
   .box {

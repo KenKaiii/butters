@@ -179,12 +179,16 @@ fn do_scan(state: &AppState) -> ScanResult {
     let start_of: HashMap<u32, u64> = procs.iter().map(|p| (p.pid, p.start_time)).collect();
     let seq = state.seq.fetch_add(1, Ordering::Relaxed);
 
+    let only = e2e_only_pid();
     let mut picked: Vec<(Group, String, bool, Option<String>)> = Vec::new();
     let mut protected = Vec::new();
     for a in assessed {
         let g = a.group;
         match a.verdict {
             Verdict::Suggest { reason, recommended, note } => {
+                if only.is_some_and(|pid| !g.members.contains(&pid)) {
+                    continue;
+                }
                 // Identical leftovers (same tool, all orphaned) become one card.
                 let same = picked.iter_mut().find(|(p, r, _, _)| g.orphaned && p.orphaned && p.kind == g.kind && base_title(&p.title) == g.title && *r == reason);
                 match same {
@@ -291,11 +295,29 @@ fn ports_text(ports: &[u16]) -> String {
     if more > 0 { format!("{} +{more}", shown.join(" ")) } else { shown.join(" ") }
 }
 
+/// Debug builds only: `BUTTERS_E2E_ONLY_PID` limits suggestions to the one
+/// throwaway process an end-to-end test started, so a test can never close
+/// the developer's real work. Compiled out of release builds entirely.
+fn e2e_only_pid() -> Option<u32> {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var("BUTTERS_E2E_ONLY_PID").ok().and_then(|v| v.parse().ok())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
+
 fn do_scan_services(state: &AppState) -> ServicesResult {
     let docker = std::thread::spawn(services::docker_containers);
     let ollama = std::thread::spawn(services::ollama_models);
-    let containers = docker.join().ok().flatten();
-    let models = ollama.join().ok().flatten();
+    let mut containers = docker.join().ok().flatten();
+    let mut models = ollama.join().ok().flatten();
+    if e2e_only_pid().is_some() {
+        containers = None;
+        models = None;
+    }
     let ignored: Vec<String> = lock(&state.settings).ignored.clone();
     let seq = state.seq.fetch_add(1, Ordering::Relaxed);
     let mut suggestions = Vec::new();

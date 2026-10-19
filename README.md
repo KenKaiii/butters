@@ -62,6 +62,9 @@ Needs Rust (stable), Node 22+ and pnpm.
 pnpm install
 pnpm tauri dev                      # run with hot reload
 cd src-tauri && cargo test          # engine, safety and real-process tests
+pnpm test:e2e                       # panel end-to-end (WebKit + Chromium, fake backend)
+pnpm tauri build --debug --bundles app --no-sign && python3 e2e/macos_app.py
+                                    # real app on macOS: real clicks, real settings file, real process closed
 cd src-tauri && cargo run --example scan   # dry run: prints what Butters would suggest
 pnpm tauri build --bundles app,dmg  # macOS release (DMG window art: python3 scripts/make_dmg_background.py)
 ```

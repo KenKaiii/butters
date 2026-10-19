@@ -8,3 +8,5 @@ src-tauri/gen/schemas
 *.p12
 *.key
 .env*
+test-results
+playwright-report
