@@ -1,152 +1,88 @@
-# Butters
+<pre align="center">
+ ▀█████████▄  ███    █▄      ███         ███        ▄████████    ▄████████    ▄████████
+   ███    ███ ███    ███ ▀█████████▄ ▀█████████▄   ███    ███   ███    ███   ███    ███
+   ███    ███ ███    ███    ▀███▀▀██    ▀███▀▀██   ███    █▀    ███    ███   ███    █▀
+  ▄███▄▄▄██▀  ███    ███     ███   ▀     ███   ▀  ▄███▄▄▄      ▄███▄▄▄▄██▀   ███
+ ▀▀███▀▀▀██▄  ███    ███     ███         ███     ▀▀███▀▀▀     ▀▀███▀▀▀▀▀   ▀███████████
+   ███    ██▄ ███    ███     ███         ███       ███    █▄  ▀███████████          ███
+   ███    ███ ███    ███     ███         ███       ███    ███   ███    ███    ▄█    ███
+ ▄█████████▀  ████████▀     ▄████▀      ▄████▀     ██████████   ███    ███  ▄████████▀
+                                                                ███    ███
+</pre>
 
-A menu bar (macOS) / tray (Windows) app that keeps a busy dev machine running smooth.
-It finds what's slowing things down: leftover dev servers, idle coding-agent sessions,
-orphaned MCP servers, idle Docker containers, Ollama models parked in memory, and heavy apps
-you haven't touched in a while. You then pick what to close.
+<p align="center">
+  <img src="docs/hero.png" alt="Butters: the list of things you could close, the Freed card, and lifetime stats" width="100%">
+</p>
 
-**It never closes anything on its own.**
+<p align="center">
+  <strong>Your Mac, buttery smooth again. No restart required.</strong>
+</p>
 
-## What it suggests
+<p align="center">
+  <a href="https://github.com/KenKaiii/butters/releases/latest"><img src="https://img.shields.io/github/v/release/KenKaiii/butters?style=for-the-badge&label=Download&color=efd27f" alt="Download Butters"></a>
+  <a href="https://github.com/KenKaiii/butters/stargazers"><img src="https://img.shields.io/github/stars/KenKaiii/butters?style=for-the-badge&label=Stars&color=yellow" alt="Star Butters on GitHub"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
+  <a href="https://youtube.com/@kenkaidoesai"><img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
+  <a href="https://skool.com/kenkai"><img src="https://img.shields.io/badge/Skool-Community-b0b6ff?style=for-the-badge" alt="Skool"></a>
+</p>
 
-| Thing | When it's suggested | Pre-ticked? |
-|---|---|---|
-| Dev server, agent session, MCP server, watcher whose terminal is gone | Always (it's a leftover) | Yes |
-| Dev server / agent session | Quiet for 30 min+ | Yes after 2 h |
-| Language server, MCP server, watcher | Quiet for 1 h+ and heavy | No |
-| Desktop app (browser, editor, Slack…) | Not in front for 1 h+ and over 800 MB | No |
-| Docker Desktop with no containers running | Holding 500 MB+ | Yes |
-| Docker container | Using under 1% CPU | No |
-| Ollama model | Loaded in memory | Only if kept for 30 min+ more |
-| Anything | Using 50%+ CPU | Command-line tools only |
+Butters lives in your menu bar and keeps a busy dev machine running smooth. A day of coding agents, dev servers and MCP servers leaves a pile of leftovers behind: servers whose terminal is long gone, idle agent sessions, Docker containers nobody touched all week. Butters finds them, tells you what each one is holding, and closes the ones you pick. Nothing closes until you say so.
 
-"Quiet" is measured, not guessed: Butters notes each process's CPU time once a minute, and on
-macOS it also reads when each terminal last had input or output.
+## Why Butters
 
-## What it never touches
+**Built for people who run a lot of agents.** Generic cleaners see "node" and "python". Butters knows what they actually are.
 
-- **The app you're using**, plus anything you had in front in the last 15 minutes.
-- Work running inside the app in front, like an editor's language servers. In a terminal,
-  idle sessions can still be suggested, but never pre-ticked and always with a warning.
-- **Butters itself**, and whatever started it (the terminal you ran it from).
-- Terminals as a whole: quitting one would end every session in it.
-- Anything owned by another user or the system, OS processes, and iOS Simulator apps.
-- Anything you mark "leave alone" (the eye button). Clear the list in Settings.
+- **Leftovers:** dev servers and MCP servers still running after their terminal or session closed.
+- **Idle agent sessions:** Claude Code, Codex, GG Coder, Gemini CLI, Aider, OpenCode, Cursor Agent and more, measured by how long they've actually been quiet.
+- **Docker:** containers with no activity for days, Docker's own VM memory, old image versions and build cache taking up disk.
+- **Leaks:** anything whose memory keeps climbing, like "Grew 2.1 GB in 40 min".
+- **The fan:** what's actually been working the CPU over the last half hour, not just right now.
 
-## How closing works
+**It never closes what you're using.** The app in front, anything you used in the last 15 minutes, work running inside the app you're in, Butters itself and whatever started it, the system and other users are all protected. Apps get the same polite Quit as their own menu, so they can ask to save. Force close only appears if that fails, and asks first.
 
-1. Every target is checked again when you click: each process must still be the *same* one the
-   scan saw (process id **and** start time, so a reused id can never hit a different program),
-   owned by you, and not on the protected list. pids 0 and 1 are refused outright.
-2. **Polite first.** Apps get the same Quit request as their own menu (macOS) or window close
-   button (Windows), so they can ask you to save. Command-line tools get SIGTERM. Docker
-   containers use `docker stop`; Ollama models use Ollama's own unload call.
-3. **Force close** only appears if the polite way didn't work, and asks you to confirm first.
+**It barely uses anything itself.** About 20 MB of memory and 0% CPU sitting in the menu bar. The panel only exists while it's open.
 
-## Footprint
+## What you get
 
-Measured on an M-series Mac (macOS 27), release build (before sounds and live meters were added):
+- **One list of what you could close:** each with what it's holding and why it's there. Leftovers are pre-ticked, anything you might still want isn't.
+- **Sweep:** one button for the end of the day. Leftovers, idle agents and idle containers in one go. You confirm first.
+- **Live meters:** memory as a melting stick of butter, CPU as a sizzling pan. They update every 2 seconds.
+- **Lifetime stats:** everything Butters has freed since you installed it, your best day, and what it closed most.
+- **Gentle alerts:** a notification when memory is low, the machine is running hot, the CPU stays maxed out, or something starts leaking. At most once every 30 minutes each.
+- **⌥⌘B from anywhere:** opens Butters. Change it or turn it off in Settings.
+- **Butter all the way down:** rows melt when they close, sounds are soft and in sync, and the panel melts away when you click off it. Turn sounds off any time.
+- **Updates itself:** checks GitHub every 6 hours and installs when you click. Every update is signed.
 
-- App bundle: 3.9 MB (includes the Sora font, 33 KB). Windows exe: 4 MB.
-- Idle in the menu bar before the panel is first opened: **15 MB**, 0% CPU.
-- The panel's web view is destroyed when it closes (after a 220 ms melt-away), so Butters drops back to about 30 MB.
-  macOS keeps two small shared WebKit helpers (about 50 MB together) alive after the first open.
-- Background work: one look at which app is in front every 3 s, and one light process sample a
-  minute. A full scan takes about 0.6 s and only runs while the panel is open.
+## Get started
 
-## Playground (try it safely)
+1. Install Butters:
 
-`Butters Playground` is a separate test app with its own name, data and history. It starts
-seven real throwaway processes in `~/.butters-playground` (Vite, Next.js and Storybook dev
-servers left behind by a closed terminal, an idle Claude Code session, an MCP server, a busy
-webpack watch and a process that leaks memory) and sees **only those**. Your real apps are
-invisible to it. Close them as often as you like, then hit **Reset** to start them all again.
-Quitting the Playground stops whatever is left. Storybook takes 2.5 s to quit on purpose, like
-an app that saves first.
+   **macOS:** [Download the latest release](https://github.com/KenKaiii/butters/releases/latest), open the `.dmg` and drag Butters into Applications. Apple Silicon and Intel builds, signed and notarized.
 
-```sh
-pnpm playground    # builds src-tauri/target/release/bundle/macos/Butters Playground.app
-```
+   **Windows:** [Download the latest release](https://github.com/KenKaiii/butters/releases/latest) and run the `-setup.exe`.
 
-Needs Node.js. Never released or auto-updated; the real Butters doesn't contain any of it.
+2. Click the butter pat in your menu bar (or press ⌥⌘B), tick what you want gone, and hit **Close**.
 
-## Develop
+The only permission it asks for is notifications, for alerts. One click turns them on.
 
-Needs Rust (stable), Node 22+ and pnpm.
+## Try it safely
 
-```sh
+`Butters Playground` is a separate test app that starts seven throwaway processes (dev servers, an agent session, an MCP server, a busy build and a leaking process) and can only see those. Close them as often as you like, then hit **Reset**. Your real apps are invisible to it.
+
+## Build it yourself
+
+With Rust, Node.js, pnpm and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) installed:
+
+```bash
+git clone https://github.com/KenKaiii/butters.git
+cd butters
 pnpm install
-pnpm tauri dev                      # run with hot reload
-cd src-tauri && cargo test          # engine, safety and real-process tests
-pnpm test:e2e                       # panel end-to-end (WebKit + Chromium, fake backend)
-pnpm tauri build --debug --bundles app --no-sign && python3 e2e/macos_app.py
-                                    # real app on macOS: real clicks, real settings file, real process closed
-cd src-tauri && cargo run --example scan   # dry run: prints what Butters would suggest
-pnpm tauri build --bundles app,dmg  # macOS release (DMG window art: python3 scripts/make_dmg_background.py)
+pnpm tauri dev          # run it
+pnpm playground         # build Butters Playground
 ```
 
-Windows from a Mac (compiles and links; tests run on Windows in CI):
+Tests: `cd src-tauri && cargo test` for the rules and safety checks, `pnpm test:e2e` for the panel. How it looks and moves is in [DESIGN.md](DESIGN.md). MIT licensed, so you can build on it.
 
-```sh
-cd src-tauri
-PATH="$(brew --prefix llvm@20)/bin:$PATH" cargo xwin build --release --target x86_64-pc-windows-msvc
-```
+## Learn with me
 
-`.github/workflows/ci.yml` runs type checks, clippy and the tests on real macOS and Windows
-machines, plus `cargo audit`.
-
-## Layout
-
-- `src-tauri/src/engine/`: pure rules (what a process is, grouping, protection, suggestions). No OS calls, fully unit tested.
-- `src-tauri/src/actions.rs`: closing, with the re-check at click time.
-- `src-tauri/src/platform/`: macOS/Windows bits (app in front, memory pressure, heat, polite quit).
-- `src-tauri/src/services.rs`: Docker and Ollama.
-- `src-tauri/src/sampler.rs`: process table and measured idle time.
-- `src/`: the panel (Svelte 5, about 28 KB gzipped). Look and motion are described in `DESIGN.md`.
-
-## Security notes
-
-- The panel can call only Butters' own commands (`src-tauri/capabilities/panel.json`). There is
-  no shell, file-system or HTTP plugin, and a strict Content Security Policy is in place.
-- The panel never sends process ids. It refers to suggestions by an id from the last scan, and
-  the backend keeps the real targets.
-- External programs (`docker`) run with fixed arguments, never through a shell, with a timeout.
-  Container ids and model names are checked against strict patterns first.
-- Ollama is contacted only on `127.0.0.1:11434`, with no redirects and a size cap on replies.
-
-## Permissions
-
-Butters needs almost nothing:
-
-- **Seeing and closing your own processes, and knowing which app is in front:** no permission on macOS or Windows.
-- **Notifications** (alerts, "update ready"): the only one. If it's undecided or off, the panel shows a
-  single "Turn on" row. One click shows the system prompt or opens the right Settings page.
-- **Start at login:** a toggle in Settings. No system prompt.
-
-## Updates and releases
-
-Installed copies check GitHub Releases (`latest.json`) shortly after start and every 6 hours.
-When an update is out, the panel shows "Update x.y.z ready" and Butters notifies you once. It
-installs only when you click Update. Every update is signed, and Butters refuses any download whose
-signature doesn't match the public key built into the app.
-
-To ship a release:
-
-```sh
-scripts/release.sh 0.2.0      # bumps versions, tags v0.2.0, pushes
-```
-
-`.github/workflows/release.yml` then builds for macOS (Apple Silicon + Intel) and Windows, signs
-and notarizes the Mac builds, and publishes the release with `latest.json`.
-
-Repo secrets it uses: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`,
-`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
-`APPLE_PASSWORD`, `APPLE_TEAM_ID`. Keep the updater private key backed up somewhere safe: if it's
-lost, installed copies can't accept new updates.
-
-## Not done yet
-
-- Windows builds aren't code-signed (that needs a separate Windows certificate), so SmartScreen
-  may warn on first install. Updates are still signature-checked.
-- On Windows, temperature and the OS memory-pressure signal aren't available to normal apps,
-  so Butters uses memory used vs. total instead. Terminal-activity idle detection is macOS only.
+Come build with me in my [Skool community](https://skool.com/kenkai). Get help, share what you're making, and learn how to get more out of AI.

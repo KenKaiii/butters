@@ -25,5 +25,6 @@
     "typescript": "6.0.3",
     "vite": "8.3.4"
   },
-  "packageManager": "pnpm@10.17.1"
+  "packageManager": "pnpm@10.17.1",
+  "license": "MIT"
 }
