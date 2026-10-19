@@ -58,7 +58,7 @@ impl FrontTracker {
 
 #[derive(Debug, Clone)]
 enum Target {
-    Procs { key: String, target: ProcTarget },
+    Procs { key: String, kind: Kind, target: ProcTarget },
     Container { key: String, id: String, name: String, memory: u64 },
     Model { key: String, name: String, memory: u64 },
 }
@@ -246,6 +246,7 @@ fn do_scan(state: &AppState) -> ScanResult {
             id,
             Target::Procs {
                 key: g.key.clone(),
+                kind: g.kind,
                 target: ProcTarget { title: g.title.clone(), members, app_pid: g.app_pid, memory: g.memory },
             },
         );
@@ -260,6 +261,7 @@ fn do_scan(state: &AppState) -> ScanResult {
                 id.clone(),
                 Target::Procs {
                     key: g.key.clone(),
+                    kind: g.kind,
                     target: ProcTarget { title: g.title.clone(), members, app_pid: g.app_pid, memory: g.memory },
                 },
             );
@@ -478,8 +480,14 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
         };
         if let Outcome::Closed { freed, .. } = &outcome {
             lock(&state.targets).remove(&id);
+            let kind = match &target {
+                Target::Procs { kind, .. } => *kind,
+                Target::Container { .. } => Kind::DockerContainer,
+                Target::Model { .. } => Kind::OllamaModel,
+            };
+            let kind = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
             let mut h = lock(&state.history);
-            h.record_freed(history::today(), *freed);
+            h.record_freed(history::today(), *freed, &kind);
             let _ = h.save(&state.history_path);
         }
         outcome
@@ -542,6 +550,13 @@ pub fn spawn_background(app: AppHandle) {
         .spawn(move || {
             let mut tick: u64 = 0;
             lock(&app.state::<AppState>().sampler).sample();
+            // Debug builds only: fire one real alert through the normal path,
+            // so tests can see what a notification looks like.
+            #[cfg(debug_assertions)]
+            if let Ok(msg) = std::env::var("BUTTERS_E2E_ALERT") {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                crate::permissions::notify(&app, &msg);
+            }
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 let state = app.state::<AppState>();
@@ -571,8 +586,7 @@ pub fn spawn_background(app: AppHandle) {
                 let alert = lock(&state.alerts).check(&stats, Instant::now());
                 if let Some((_, msg)) = alert
                     && lock(&state.settings).alerts && !panel_open {
-                        use tauri_plugin_notification::NotificationExt;
-                        let _ = app.notification().builder().title("Butters").body(msg).show();
+                        crate::permissions::notify(&app, msg);
                     }
             }
         })

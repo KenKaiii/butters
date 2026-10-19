@@ -109,8 +109,7 @@ pub fn spawn_checks(app: AppHandle) {
                     let mut notified = lock(&state.notified);
                     if notified.as_deref() != Some(v.as_str()) {
                         *notified = Some(v.clone());
-                        use tauri_plugin_notification::NotificationExt;
-                        let _ = app.notification().builder().title("Butters").body(format!("Update {v} ready")).show();
+                        crate::permissions::notify(&app, &format!("Update {v} ready"));
                     }
                 }
                 std::thread::sleep(EVERY);

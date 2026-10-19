@@ -29,6 +29,7 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             app.manage(app::AppState::new(settings::Settings::path(&config_dir)));
             panel::setup_tray(app.handle())?;
+            permissions::setup(app.handle());
             app::spawn_background(app.handle().clone());
             updates::spawn_checks(app.handle().clone());
             Ok(())

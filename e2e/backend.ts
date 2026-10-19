@@ -9,7 +9,13 @@ export interface FakeState {
   settings: { alerts: boolean; launch_at_login: boolean; sounds: boolean; ignored: string[] };
   notify: "ask" | "off" | "on";
   update: { current: string; available: string | null; checking: boolean; installing: boolean; error: string | null };
-  smoothness: { score: number | null; freedToday: number; freedWeek: number; week: number[] };
+  smoothness: {
+    score: number | null;
+    freedToday: number;
+    freedWeek: number;
+    week: number[];
+    lifetime: { since: number; freed: number; closed: number; by_kind: Record<string, number>; best_day: number };
+  };
   level: "smooth" | "busy" | "strained";
   /** Outcome per suggestion id for close_item (default: closed). */
   closeAs: Record<string, "closed" | "still_running" | "needs_force">;
@@ -26,7 +32,19 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
     notify: "on",
     update: { current: "0.1.0", available: null, checking: false, installing: false, error: null },
     closeAs: {} as Record<string, string>,
-    smoothness: { score: 87, freedToday: 400 * MB, freedWeek: 3.2 * GB, week: [0, 1 * GB, 0, 512 * MB, 0, 1.3 * GB, 400 * MB] },
+    smoothness: {
+      score: 87,
+      freedToday: 400 * MB,
+      freedWeek: 3.2 * GB,
+      week: [0, 1 * GB, 0, 512 * MB, 0, 1.3 * GB, 400 * MB],
+      lifetime: {
+        since: Math.floor(Date.now() / 1000) - 12 * 86_400,
+        freed: 41.2 * GB,
+        closed: 128,
+        by_kind: { dev_server: 54, agent_session: 31, mcp_server: 22, browser: 9, docker_container: 7, app: 5 },
+        best_day: 6.1 * GB,
+      },
+    },
     level: "smooth",
     ...init,
   };
@@ -72,6 +90,10 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       const as = force ? "closed" : (state.closeAs[id] ?? "closed");
       if (as === "closed") {
         scan.suggestions = scan.suggestions.filter((x: any) => x.id !== id);
+        const lt = state.smoothness.lifetime;
+        lt.freed += s.memory;
+        lt.closed += 1;
+        lt.by_kind[s.kind] = (lt.by_kind[s.kind] ?? 0) + 1;
         return { status: "closed", message: "Freed", freed: s.memory };
       }
       if (as === "needs_force") return { status: "needs_force", message: "No window, force close only" };

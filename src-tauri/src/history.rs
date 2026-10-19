@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::alerts::Level;
@@ -38,13 +40,33 @@ impl Day {
     }
 }
 
+/// Everything Butters has done since it was installed. Unlike `days`, this
+/// is never pruned.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lifetime {
+    /// Unix seconds of the first run (0 = not set yet).
+    pub since: u64,
+    pub freed: u64,
+    pub closed: u32,
+    /// Closed count per kind ("dev_server", "agent_session", ...).
+    pub by_kind: BTreeMap<String, u32>,
+    pub best_day: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct History {
     pub days: Vec<Day>,
+    pub lifetime: Lifetime,
+}
+
+pub fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 pub fn today() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() / 86_400).unwrap_or(0)
+    now_secs() / 86_400
 }
 
 impl History {
@@ -53,11 +75,27 @@ impl History {
     }
 
     pub fn load(path: &Path) -> History {
-        std::fs::read(path)
+        let mut h = std::fs::read(path)
             .ok()
             .filter(|b| b.len() < 256 * 1024)
             .and_then(|b| serde_json::from_slice::<History>(&b).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        h.adopt_days(now_secs());
+        h
+    }
+
+    /// Starts the lifetime clock, and folds in days recorded before lifetime
+    /// stats existed (v0.1.2/0.1.3 history files), so nothing is lost.
+    fn adopt_days(&mut self, now: u64) {
+        let lt = &mut self.lifetime;
+        if lt.since == 0 {
+            lt.since = self.days.iter().map(|d| d.day * 86_400).min().unwrap_or(now).min(now);
+            if lt.freed == 0 && lt.closed == 0 {
+                lt.freed = self.days.iter().map(|d| d.freed).sum();
+                lt.closed = self.days.iter().map(|d| d.closed).sum();
+                lt.best_day = self.days.iter().map(|d| d.freed).max().unwrap_or(0);
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -91,10 +129,19 @@ impl History {
         }
     }
 
-    pub fn record_freed(&mut self, day: u64, bytes: u64) {
+    pub fn record_freed(&mut self, day: u64, bytes: u64, kind: &str) {
         let d = self.day_mut(day);
         d.freed = d.freed.saturating_add(bytes);
         d.closed += 1;
+        let today = d.freed;
+        let lt = &mut self.lifetime;
+        if lt.since == 0 {
+            lt.since = now_secs();
+        }
+        lt.freed = lt.freed.saturating_add(bytes);
+        lt.closed += 1;
+        lt.best_day = lt.best_day.max(today);
+        *lt.by_kind.entry(kind.to_string()).or_default() += 1;
     }
 
     pub fn summary(&self, day: u64) -> Summary {
@@ -104,6 +151,7 @@ impl History {
             freed_today: self.freed_on(day),
             freed_week: week.iter().sum(),
             week,
+            lifetime: self.lifetime.clone(),
         }
     }
 
@@ -121,6 +169,8 @@ pub struct Summary {
     pub freed_week: u64,
     /// Freed per day, oldest first, ending today (7 entries).
     pub week: Vec<u64>,
+    /// Since install.
+    pub lifetime: Lifetime,
 }
 
 #[cfg(test)]
@@ -147,7 +197,7 @@ mod tests {
     fn week_and_retention() {
         let mut h = History::default();
         for day in 80..100 {
-            h.record_freed(day, 1000);
+            h.record_freed(day, 1000, "dev_server");
         }
         assert_eq!(h.days.len(), KEEP_DAYS);
         assert_eq!(h.days.first().unwrap().day, 86);
@@ -164,11 +214,44 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("butters-hist-{}", std::process::id()));
         let path = History::path(&dir);
         let mut h = History::default();
-        h.record_freed(5, 42);
+        h.record_freed(5, 42, "app");
         h.save(&path).unwrap();
         assert_eq!(History::load(&path), h);
         std::fs::write(&path, b"nope").unwrap();
-        assert_eq!(History::load(&path), History::default());
+        let fresh = History::load(&path);
+        assert!(fresh.days.is_empty() && fresh.lifetime.freed == 0 && fresh.lifetime.since > 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn lifetime_outlives_the_14_day_window() {
+        let mut h = History::default();
+        for day in 1..=40 {
+            h.record_freed(day, 1_000, if day % 2 == 0 { "dev_server" } else { "agent_session" });
+        }
+        h.record_freed(40, 5_000, "mcp_server");
+        assert_eq!(h.days.len(), KEEP_DAYS);
+        assert_eq!(h.lifetime.freed, 45_000);
+        assert_eq!(h.lifetime.closed, 41);
+        assert_eq!(h.lifetime.best_day, 6_000);
+        assert_eq!(h.lifetime.by_kind["dev_server"], 20);
+        assert_eq!(h.lifetime.by_kind["agent_session"], 20);
+        assert_eq!(h.lifetime.by_kind["mcp_server"], 1);
+        assert_eq!(h.summary(40).lifetime, h.lifetime);
+    }
+
+    #[test]
+    fn old_history_files_are_adopted_into_lifetime() {
+        // A v0.1.2 file: days only, no lifetime.
+        let old = br#"{"days":[{"day":100,"smooth":5,"busy":0,"strained":0,"freed":3000,"closed":2},{"day":101,"smooth":1,"busy":1,"strained":0,"freed":7000,"closed":3}]}"#;
+        let mut h: History = serde_json::from_slice(old).unwrap();
+        h.adopt_days(200 * 86_400);
+        assert_eq!(h.lifetime.since, 100 * 86_400);
+        assert_eq!(h.lifetime.freed, 10_000);
+        assert_eq!(h.lifetime.closed, 5);
+        assert_eq!(h.lifetime.best_day, 7_000);
+        // Adopting twice doesn't double count.
+        h.adopt_days(200 * 86_400);
+        assert_eq!(h.lifetime.freed, 10_000);
     }
 }

@@ -12,7 +12,8 @@
     cpu,
     ports,
     onDone,
-  }: { freed: number; closed: number; cpu: number; ports: number; onDone: () => void } = $props();
+    total = 0,
+  }: { freed: number; closed: number; cpu: number; ports: number; total?: number; onDone: () => void } = $props();
 
   const amount = new Tween(0, { easing: butterEase });
   const GB = 1024 ** 3;
@@ -45,7 +46,11 @@
         <span class="stat" in:pour={{ delay: 380 + i * 90, y: 6 }}><strong>{st.n}</strong> {st.label}</span>
       {/each}
     </div>
-    {#if freed >= GB}<p class="cheer" in:pour={{ delay: 640, y: 6 }}>Smooth as butter</p>{/if}
+    {#if total > freed}
+      <p class="cheer" in:pour={{ delay: 640, y: 6 }}>{bytes(total)} since install</p>
+    {:else if freed >= GB}
+      <p class="cheer" in:pour={{ delay: 640, y: 6 }}>Smooth as butter</p>
+    {/if}
   </div>
 </button>
 

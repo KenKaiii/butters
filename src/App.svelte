@@ -12,13 +12,14 @@
   import StatusPat from "./lib/StatusPat.svelte";
   import ButterGauges from "./lib/ButterGauges.svelte";
   import Toast from "./lib/Toast.svelte";
+  import StatsView from "./lib/StatsView.svelte";
   import { dropFrom } from "./lib/drops";
 
   let scan = $state<ScanResult | null>(null);
   let services = $state<ServicesResult | null>(null);
   let error = $state<string | null>(null);
   let refreshing = $state(false);
-  let view = $state<"main" | "settings">("main");
+  let view = $state<"main" | "settings" | "stats">("main");
   let settings = $state<Settings | null>(null);
   let settingsError = $state<string | null>(null);
   let showProtected = $state(false);
@@ -226,6 +227,11 @@
     await refresh();
   }
 
+  function openStats() {
+    view = "stats";
+    void loadSmoothness();
+  }
+
   async function loadSmoothness() {
     smooth = await api.smoothness().catch(() => smooth);
   }
@@ -282,7 +288,7 @@
     if (savings) savings = null;
     else if (armedKey) armedKey = null;
     else if (confirming) confirming = false;
-    else if (view === "settings") view = "main";
+    else if (view !== "main") view = "main";
     else api.hide();
   }
 
@@ -370,6 +376,9 @@
         <div class="tools">
           <button class="ghost" type="button" aria-label="Refresh" title="Refresh" onclick={refresh} disabled={refreshing || running}>
             <span class="spin" class:spinning={refreshing}><Icon name="refresh" /></span>
+          </button>
+          <button class="ghost" type="button" aria-label="Stats" title="Stats" onclick={openStats}>
+            <Icon name="chart" />
           </button>
           <button class="ghost" type="button" aria-label="Settings" title="Settings" onclick={openSettings}>
             <Icon name="settings" />
@@ -518,10 +527,10 @@
               <button class="btn primary" type="button" onclick={() => (confirming = true)}>Close {selected.length}</button>
             {:else}
               {#if smooth && (smooth.score !== null || smooth.freedWeek > 0)}
-                <p class="bar-text smooth-line" title="Today's smoothness and this week's freed memory">
+                <button class="bar-text smooth-line" type="button" title="See everything Butters has freed" onclick={openStats}>
                   {#if smooth.score !== null}<span>Buttery <strong>{smooth.score}</strong></span>{/if}
                   {#if smooth.freedWeek > 0}<span class="muted">· {bytes(smooth.freedWeek)} this week</span>{/if}
-                </p>
+                </button>
                 <svg class="spark" viewBox="0 0 48 16" aria-hidden="true">
                   {#each smooth.week as v, i (i)}
                     {@const max = Math.max(1, ...smooth.week)}
@@ -536,6 +545,8 @@
         {/key}
       </footer>
     </section>
+  {:else if view === "stats"}
+    <StatsView {smooth} onBack={() => (view = "main")} />
   {:else}
     <section class="view" aria-label="Settings" in:pour={{ y: -6 }} out:dissolve={{ duration: 220 }}>
       <header class="head">
@@ -606,7 +617,7 @@
   {/if}
 
   {#if savings}
-    <Savings {...savings} onDone={() => (savings = null)} />
+    <Savings {...savings} total={(smooth?.lifetime.freed ?? 0) + savings.freed} onDone={() => (savings = null)} />
   {/if}
 
   <div class="toast-slot" role="status" aria-live="polite">
@@ -714,6 +725,13 @@
     }
   }
   .smooth-line {
+    border: 0;
+    padding: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-align: start;
     display: flex;
     gap: 6px;
     align-items: baseline;

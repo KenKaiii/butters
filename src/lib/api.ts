@@ -94,11 +94,21 @@ export interface UpdateStatus {
   error: string | null;
 }
 
+export interface Lifetime {
+  /** Unix seconds of the first run. */
+  since: number;
+  freed: number;
+  closed: number;
+  by_kind: Record<string, number>;
+  best_day: number;
+}
+
 export interface Smoothness {
   score: number | null;
   freedToday: number;
   freedWeek: number;
   week: number[];
+  lifetime: Lifetime;
 }
 
 export type Sound = "open" | "tick" | "melt" | "freed" | "close";

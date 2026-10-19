@@ -22,6 +22,7 @@
     back: ["m12 19-7-7 7-7", "M19 12H5"],
     chevron: ["m9 18 6-6-6-6"],
     check: ["M20 6 9 17l-5-5"],
+    chart: ["M3 3v16a2 2 0 0 0 2 2h16", "M18 17V9", "M13 17V5", "M8 17v-3"],
   } as const;
   export type IconName = keyof typeof ICONS;
 </script>
