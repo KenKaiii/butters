@@ -104,7 +104,7 @@ S("django", "Django runserver", "pretick", "py-script", script="manage.py", args
 S("flask", "flask run", "pretick", "py", mod="flask", args=["run", "--port", "5050"], port=5050)
 S("streamlit", "Streamlit", "pretick", "py", mod="streamlit", args=["run", "app.py"], port=8501)
 S("jupyter", "Jupyter Lab", "pretick", "py", mod="jupyterlab", port=8888)
-S("py-http", "python -m http.server", "pretick", "py", mod="http.server", port=8003)
+S("py-http", "python -m http.server", "pretick", "py", mod="http.server", args=["8003", "--bind", "127.0.0.1"], port=8003, real=True)
 S("rails", "Rails server (puma)", "pretick", "native", exe=N("ruby/bin/ruby", "ruby/bin/ruby.exe"), argv=["ruby", "bin/rails", "server"], port=3004)
 S("go-air", "Go air live reload", "pretick", "native", exe=N("go/bin/air", "go/bin/air.exe"), argv=["air"], port=8004)
 S("go-run", "go run ./cmd/api (built binary on a port)", "pretick", "native",
@@ -303,10 +303,14 @@ def launch(sc):
         exe, argv = DENO, ["deno", "run", "-A", "--watch", str(f)]
     elif k == "py":
         mod = sc["mod"]
-        site = proj / "site"
-        write(site / mod.replace(".", "/") / "__init__.py", "")
-        write(site / mod.replace(".", "/") / "__main__.py", PYSRV if sc.get("port") else PYIDLE)
-        env["PYTHONPATH"] = str(site)
+        if not sc.get("real"):
+            # A stand-in package with the tool's module name, so `python -m
+            # <tool>` looks exactly like the real thing. ("real" scenarios run
+            # the genuine standard-library module instead.)
+            site = proj / "site"
+            write(site / mod.replace(".", "/") / "__init__.py", "")
+            write(site / mod.replace(".", "/") / "__main__.py", PYSRV if sc.get("port") else PYIDLE)
+            env["PYTHONPATH"] = str(site)
         exe, argv = PY, ["python", "-m", mod, *sc.get("args", [])]
     elif k == "py-script":
         f = write(proj / sc["script"], PYSRV)
@@ -341,9 +345,54 @@ def up():
             st["procs"][sc["id"]] = pid
     save(st)
     (LAB / "scenarios.json").write_text(json.dumps(SCENARIOS, indent=1))
-    # Let servers bind their ports and buffers fill before anyone scores.
-    time.sleep(float(os.environ.get("LAB_SETTLE", "10")))
-    print(f"started {len(st['procs'])} of {len(SCENARIOS)} scenarios in {LAB}")
+    ready = wait_until_ready(st)
+    print(f"started {len(st['procs'])} of {len(SCENARIOS)} scenarios in {LAB} ({ready})")
+
+
+def listening_ports():
+    """Every TCP port something on this machine is listening on."""
+    if WIN:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True).stdout
+        return {int(l.split()[1].rsplit(":", 1)[1]) for l in out.splitlines() if "LISTENING" in l}
+    out = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fn"], capture_output=True, text=True).stdout
+    return {int(l.rsplit(":", 1)[1]) for l in out.splitlines() if l.startswith("n") and l.rsplit(":", 1)[1].isdigit()}
+
+
+def lab_cmdlines():
+    """Command lines of every process right now (to see which tools are up)."""
+    if WIN:
+        ps = ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Process).CommandLine"]
+        return subprocess.run(ps, capture_output=True, text=True).stdout
+    return subprocess.run(["ps", "-axo", "command="], capture_output=True, text=True).stdout
+
+
+def _is_up(scenario_id, cmds):
+    """Is this scenario's tool running? `python -m <tool>` carries no folder
+    in its command line, so it's recognised by its module instead."""
+    sc = next(s for s in SCENARIOS if s["id"] == scenario_id)
+    if sc["kind"] == "py":
+        return f"-m {sc['mod']}" in cmds
+    return f"projects/{scenario_id}/" in cmds
+
+
+def wait_until_ready(st, timeout=float(os.environ.get("LAB_READY_TIMEOUT", "180"))):
+    """Waits until every started scenario is really up, instead of a fixed
+    sleep (slow CI machines need longer): servers listening on their port,
+    and the tool's process running with the scenario's folder or name on its
+    command line. Then a short extra settle so memory is filled in."""
+    want_ports = {sc["port"] for sc in SCENARIOS if sc["id"] in st["procs"] and sc.get("port")}
+    want_procs = {sc["id"] for sc in SCENARIOS if sc["id"] in st["procs"] and sc["kind"] != "native"}
+    t0 = time.time()
+    while True:
+        missing_ports = want_ports - listening_ports()
+        cmds = lab_cmdlines().replace("\\", "/")
+        missing = {i for i in want_procs if not _is_up(i, cmds)}
+        if not missing_ports and not missing:
+            time.sleep(3)
+            return f"all up after {time.time() - t0:.0f} s"
+        if time.time() - t0 > timeout:
+            return f"gave up after {timeout:.0f} s: ports {sorted(missing_ports)}, procs {sorted(missing)}"
+        time.sleep(1)
 
 
 def _kill(pid, tree=False):

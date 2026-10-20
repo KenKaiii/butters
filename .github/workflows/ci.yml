@@ -74,7 +74,7 @@ jobs:
       - name: Score them
         working-directory: src-tauri
         shell: bash
-        run: sleep 10 && cargo run --release --example lab
+        run: cargo run --release --example lab
       - name: Stop the scenarios
         if: always()
         run: python scripts/lab/lab.py down

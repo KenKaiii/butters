@@ -183,10 +183,15 @@ test("tooltips are Butters cards, short, never the system box", async ({ page })
   });
   // No native title tooltips anywhere in the panel.
   expect(await page.locator("[title]").count()).toBe(0);
-  const label = page.locator(".row", { hasText: "Old image versions" }).locator("label.text");
+  // Wait for the row and for its entrance to settle: hovering an element
+  // that is still pouring in can land before the tooltip is listening.
+  const row = page.locator(".row", { hasText: "Old image versions" });
+  await expect(row).toBeVisible();
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running" || (a.effect as KeyframeEffect)?.getComputedTiming().iterations === Infinity));
+  const label = row.locator("label.text");
   await label.hover();
   const card = page.locator(".butter-tip");
-  await expect(card).toHaveClass(/on/);
+  await expect(card).toHaveClass(/on/, { timeout: 5000 });
   await expect(card.locator(".butter-tip-title")).toHaveText("Old image versions ×14");
   // Reason, then four images and "+3 more": not a wall of text.
   await expect(card.locator(".butter-tip-line")).toHaveText([
@@ -202,7 +207,7 @@ test("tooltips are Butters cards, short, never the system box", async ({ page })
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(380);
   await page.mouse.move(5, 5);
-  await expect(card).not.toHaveClass(/on/);
+  await expect(card).not.toHaveClass(/on/, { timeout: 5000 });
 });
 
 test("rows that fit don't sprout redundant tooltips", async ({ page }) => {
