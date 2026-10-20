@@ -103,7 +103,7 @@ fn validate(target: &ProcTarget, guard: &Guard) -> Result<Vec<Live>, String> {
         if p.user_id() != Some(&my_uid) {
             return Err("Not yours, skipped".to_string());
         }
-        live.push(Live { pid: *pid, memory: p.memory() });
+        live.push(Live { pid: *pid, memory: platform::footprint(*pid).unwrap_or_else(|| p.memory()) });
     }
     Ok(live)
 }

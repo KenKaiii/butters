@@ -95,7 +95,8 @@ impl Sampler {
                 .and_then(|e| app_root(&e))
                 .map(|root| app_name(&root))
                 .unwrap_or_else(|| p.name().to_string_lossy().into_owned());
-            out.push(Reading { pid: key.0, start: key.1, label, memory: p.memory(), cpu });
+            let memory = platform::footprint(key.0).unwrap_or_else(|| p.memory());
+            out.push(Reading { pid: key.0, start: key.1, label, memory, cpu });
         }
         out
     }
@@ -189,7 +190,7 @@ impl Sampler {
                 exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
                 cmd: p.cmd().iter().take(8).map(|a| a.to_string_lossy().into_owned()).collect(),
                 cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
-                memory: p.memory(),
+                memory: platform::footprint(pid).unwrap_or_else(|| p.memory()),
                 cpu,
                 idle_secs: idle,
                 idle_is_lower_bound: lower_bound,

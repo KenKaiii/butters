@@ -16,6 +16,9 @@ pub fn thermal_state() -> Thermal {
 pub fn terminal_idle(_pids: &[u32]) -> HashMap<u32, u64> {
     HashMap::new()
 }
+pub fn footprint(_pid: u32) -> Option<u64> {
+    None
+}
 pub fn responsible_pid(_pid: u32) -> Option<u32> {
     None
 }

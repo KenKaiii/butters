@@ -71,6 +71,14 @@ pub fn can_ask_politely(app_pid: Option<u32>, pids: &[u32]) -> bool {
     imp::can_ask_politely(app_pid, pids)
 }
 
+/// Memory a process really holds, as Activity Monitor / Task Manager count
+/// it: resident plus compressed (macOS "physical footprint"; Windows private
+/// working set + commit). Idle tools get compressed, so plain resident size
+/// can under-report them by 99%. `None` if unavailable.
+pub fn footprint(pid: u32) -> Option<u64> {
+    imp::footprint(pid)
+}
+
 /// The app macOS holds responsible for a helper process (e.g. Docker Desktop
 /// for its virtual machine). `None` where unknown or unsupported.
 pub fn responsible_pid(pid: u32) -> Option<u32> {

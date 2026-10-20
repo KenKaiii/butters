@@ -87,6 +87,15 @@ pub fn terminal_idle(pids: &[u32]) -> HashMap<u32, u64> {
     out
 }
 
+pub fn footprint(pid: u32) -> Option<u64> {
+    let raw = libc::pid_t::try_from(pid).ok()?;
+    let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a properly sized, writable rusage_info_v2 and the
+    // flavor asks for exactly that struct.
+    let rc = unsafe { libc::proc_pid_rusage(raw, libc::RUSAGE_INFO_V2, (&raw mut info).cast()) };
+    (rc == 0 && info.ri_phys_footprint > 0).then_some(info.ri_phys_footprint)
+}
+
 pub fn responsible_pid(pid: u32) -> Option<u32> {
     use std::sync::OnceLock;
     type Responsible = unsafe extern "C" fn(libc::pid_t) -> libc::pid_t;

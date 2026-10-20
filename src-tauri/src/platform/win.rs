@@ -65,6 +65,12 @@ fn visible_windows(pids: &[u32]) -> Vec<HWND> {
     state.found
 }
 
+pub fn footprint(_pid: u32) -> Option<u64> {
+    // sysinfo already reports the working set on Windows, and Windows doesn't
+    // compress idle memory as aggressively; keep that.
+    None
+}
+
 pub fn responsible_pid(_pid: u32) -> Option<u32> {
     None
 }

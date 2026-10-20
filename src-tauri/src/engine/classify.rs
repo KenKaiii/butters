@@ -22,12 +22,12 @@ fn has_word(s: &str, word: &str) -> bool {
 
 const RUNTIMES: &[&str] = &[
     "node", "bun", "deno", "python", "python3", "pythonw", "ruby", "php", "java", "dotnet", "go",
-    "uv", "uvx", "npx", "bunx", "pnpx",
+    "uv", "uvx", "npx", "bunx", "pnpx", "dart",
 ];
 
 pub fn is_runtime(name: &str) -> bool {
     let n = base(name);
-    RUNTIMES.contains(&n.as_str()) || (n.starts_with("python3.") && n.len() <= 10)
+    RUNTIMES.contains(&n.as_str()) || (n.starts_with("python3.") && n.len() <= 10) || n.starts_with("python3.1")
 }
 
 const SHELLS: &[&str] = &[
@@ -96,6 +96,8 @@ const AGENTS: &[(&str, &str)] = &[
     ("codex", "Codex"),
     ("@openai/codex", "Codex"),
     ("ggcoder", "GG Coder"),
+    ("@kenkaiiii/ggcoder", "GG Coder"),
+    ("@kenkaiiii/gg-coder", "GG Coder"),
     ("gemini", "Gemini CLI"),
     ("@google/gemini-cli", "Gemini CLI"),
     ("aider", "Aider"),
@@ -126,7 +128,9 @@ const DEV_SERVERS: &[(&str, &str)] = &[
     ("nuxi", "Nuxt"),
     ("astro", "Astro"),
     ("remix", "Remix"),
+    ("@remix-run/dev", "Remix"),
     ("react-router", "React Router"),
+    ("@react-router/dev", "React Router"),
     ("react-scripts", "Create React App"),
     ("webpack-dev-server", "webpack"),
     ("webpack", "webpack"),
@@ -135,6 +139,9 @@ const DEV_SERVERS: &[(&str, &str)] = &[
     ("storybook", "Storybook"),
     ("expo", "Expo"),
     ("metro", "Metro"),
+    ("react-native", "React Native"),
+    ("flutter_tools.snapshot", "Flutter"),
+    ("flutter_tools", "Flutter"),
     ("wrangler", "Wrangler"),
     ("convex", "Convex"),
     ("vercel", "Vercel dev"),
@@ -148,9 +155,10 @@ const DEV_SERVERS: &[(&str, &str)] = &[
     ("streamlit", "Streamlit"),
     ("gradio", "Gradio"),
     ("jupyter-lab", "Jupyter"),
+    ("jupyterlab", "Jupyter"),
     ("jupyter-notebook", "Jupyter"),
     ("jupyter", "Jupyter"),
-    ("manage.py", "Django"),
+    ("manage", "Django"),
     ("rails", "Rails"),
     ("puma", "Puma"),
     ("hugo", "Hugo"),
@@ -202,6 +210,16 @@ const LANGUAGE_SERVERS: &[(&str, &str)] = &[
     ("kotlin-language-server", "Kotlin language server"),
     ("gradledaemon", "Gradle daemon"),
     ("kotlincompiledaemon", "Kotlin daemon"),
+    ("org.gradle.launcher.daemon.bootstrap.gradledaemon", "Gradle daemon"),
+    ("org.jetbrains.kotlin.daemon.kotlincompiledaemon", "Kotlin daemon"),
+];
+
+/// Phone emulators: heavy, and easy to forget running after a build.
+const EMULATORS: &[(&str, &str)] = &[
+    ("qemu-system-aarch64", "Android emulator"),
+    ("qemu-system-x86_64", "Android emulator"),
+    ("qemu-system-x86_64-headless", "Android emulator"),
+    ("emulator", "Android emulator"),
 ];
 
 const LOCAL_MODELS: &[(&str, &str)] = &[
@@ -227,10 +245,30 @@ fn candidate_tokens(p: &ProcInfo) -> Vec<String> {
             .to_string()
     }
     let mut out = vec![stem(&p.name)];
+    // Flutter runs as `dart ... flutter_tools.snapshot run`: the snapshot is the tool.
+    if prog(p) == "dart"
+        && let Some(snap) = p.cmd.iter().find(|a| a.ends_with("flutter_tools.snapshot")) {
+            out.push(base(snap));
+        }
     let program = p.cmd.first().map(|a| stem(a)).unwrap_or_else(|| stem(&p.name));
     out.push(program.clone());
     // Only a runtime's *script* (or `python -m module`) names the real tool.
     // Later args are data (`--model gemini`) and must not change the verdict.
+    // Java names its program by main class after the classpath options
+    // (`java -Xmx2g -cp x.jar org.gradle...GradleDaemon`).
+    if program == "java" {
+        let mut it = p.cmd.iter().skip(1);
+        while let Some(a) = it.next() {
+            if a == "-cp" || a == "-classpath" || a == "-jar" {
+                it.next();
+                continue;
+            }
+            if !a.starts_with('-') {
+                out.push(a.to_ascii_lowercase());
+                break;
+            }
+        }
+    }
     if is_runtime(&program) || is_runtime(&p.name) {
         let mut it = p.cmd.iter().skip(1);
         while let Some(a) = it.next() {
@@ -288,8 +326,17 @@ fn mcp_name(arg: &str) -> Option<String> {
         }
         let clean = seg.split('@').find(|s| !s.is_empty()).unwrap_or(seg);
         if has_word(clean, "mcp") || has_word(clean, "fastmcp") {
-            if clean == "mcp" && i > 0 && segs[i - 1].starts_with('@') {
-                return Some(segs[i - 1].trim_start_matches('@').to_string());
+            // "@playwright/mcp" (as an npx arg or a node_modules path): the
+            // scope is the useful name, not the generic word "mcp".
+            if clean == "mcp" && i > 0 {
+                let scope = segs[i - 1];
+                if let Some(name) = scope.strip_prefix('@') {
+                    return Some(name.to_string());
+                }
+            }
+            if clean == "mcp" && seg.starts_with('@') {
+                // "@playwright/mcp@latest" split as ["@playwright", "mcp@latest"]
+                return Some(seg.trim_start_matches('@').to_string());
             }
             return Some(strip_ext(clean));
         }
@@ -298,7 +345,10 @@ fn mcp_name(arg: &str) -> Option<String> {
 }
 
 fn is_mcp(p: &ProcInfo) -> Option<String> {
-    for a in p.cmd.iter().take(4) {
+    // npm renames its process title to "npm exec @scope/pkg", so argv[0] can
+    // hold several words; look at each of them as well as each argument.
+    let words: Vec<&str> = p.cmd.iter().take(4).flat_map(|a| a.split_whitespace()).collect();
+    for a in words {
         if a.starts_with('-') {
             continue;
         }
@@ -329,6 +379,11 @@ pub fn classify_cli(p: &ProcInfo) -> Option<(Kind, String)> {
     if let Some(label) = match_table(p, LOCAL_MODELS) {
         return Some((Kind::LocalModel, label));
     }
+    // Only the Android SDK's emulator (its own folder), not any qemu.
+    if let Some(label) = match_table(p, EMULATORS)
+        && p.exe.as_deref().is_some_and(|e| e.contains("/emulator/") || e.to_ascii_lowercase().contains("android")) {
+            return Some((Kind::LocalModel, label));
+        }
     let watching = p.cmd.iter().any(|a| a == "--watch" || a == "-w" || a == "watch");
     if let Some(label) = match_table(p, WATCHERS) {
         let n = base(&p.name);
@@ -346,15 +401,18 @@ pub fn classify_cli(p: &ProcInfo) -> Option<(Kind, String)> {
             return Some((Kind::DevServer, label));
         }
     }
+    // A program you built yourself, listening on a port: `go run`, `cargo run`,
+    // `swift run`, `dotnet run`... (only from build folders, never installed apps).
+    if !p.ports.is_empty()
+        && let Some(exe) = p.exe.as_deref()
+        && is_dev_build(exe) {
+            return Some((Kind::DevServer, base(exe)));
+        }
+    // Something on a port under a runtime we don't know by name: call it by
+    // its runtime ("Node dev server"); the row's detail shows the project
+    // folder, which is how people tell their servers apart.
     if !p.ports.is_empty() && is_runtime(&p.name) {
-        let script = p
-            .cmd
-            .iter()
-            .skip(1)
-            .find(|a| !a.starts_with('-'))
-            .map(|a| base(a))
-            .unwrap_or_else(|| base(&p.name));
-        return Some((Kind::DevServer, script));
+        return Some((Kind::DevServer, runtime_label(&p.name)));
     }
     None
 }
@@ -366,6 +424,12 @@ pub fn app_root(exe: &str) -> Option<String> {
     // Everything running inside the iOS Simulator is one thing, managed by Xcode.
     if exe.contains("/CoreSimulator/") {
         return Some(SIMULATOR_ROOT.to_string());
+    }
+    // Interpreters that macOS ships as an .app bundle (Homebrew/python.org
+    // Python runs as ".../Python.app/Contents/MacOS/Python") are command-line
+    // work: uvicorn, Django, Jupyter, Python MCP servers. Not one "Python" app.
+    if is_bundled_interpreter(exe) {
+        return None;
     }
     if let Some(i) = exe.find(".app/") {
         return Some(exe[..i + 4].to_string());
@@ -386,6 +450,57 @@ pub fn app_root(exe: &str) -> Option<String> {
 }
 
 pub const SIMULATOR_ROOT: &str = "CoreSimulator";
+
+/// "node" -> "Node", "python3.14" -> "Python", "Python" (Homebrew's bundle) -> "Python".
+pub fn runtime_label(name: &str) -> String {
+    let n = base(name);
+    let n = n.split_whitespace().next().unwrap_or("");
+    match n {
+        "node" | "npx" => "Node",
+        "bun" | "bunx" => "Bun",
+        "deno" => "Deno",
+        "ruby" => "Ruby",
+        "php" => "PHP",
+        "java" => "Java",
+        "dotnet" => ".NET",
+        "go" => "Go",
+        "dart" => "Dart",
+        "uv" | "uvx" => "Python",
+        p if p.starts_with("python") => "Python",
+        _ => "Local",
+    }
+    .to_string()
+}
+
+/// A binary that came out of a build, not an install: Go's build cache
+/// (`go run`), Cargo/Swift/.NET/Zig build output, or `go build` into a
+/// project. Never under /Applications, /System, /usr or Homebrew.
+pub fn is_dev_build(exe: &str) -> bool {
+    let e = exe.replace('\\', "/").to_ascii_lowercase();
+    let installed = ["/applications/", "/system/", "/usr/", "/opt/homebrew/", "/library/", "c:/program files", "c:/windows/"];
+    if installed.iter().any(|p| e.starts_with(p) || e.contains(".app/")) {
+        return false;
+    }
+    let build_dirs = [
+        "/go-build/",
+        "/target/debug/",
+        "/target/release/",
+        "/.build/debug/",
+        "/.build/release/",
+        "/bin/debug/",
+        "/bin/release/",
+        "/zig-out/bin/",
+        "/tmp/air",
+        "/dist/",
+        "/build/",
+    ];
+    build_dirs.iter().any(|d| e.contains(d))
+}
+
+fn is_bundled_interpreter(exe: &str) -> bool {
+    let lower = exe.to_ascii_lowercase();
+    (lower.contains("/python.framework/") || lower.contains("/resources/python.app/")) && lower.ends_with("/python")
+}
 
 /// Friendly name for an app root ("/Applications/Google Chrome.app" -> "Google Chrome").
 pub fn app_name(root: &str) -> String {
@@ -528,7 +643,7 @@ mod tests {
     fn unknown_runtime_with_open_port_is_a_dev_server() {
         let mut p = proc("node", &["node", "server.js"]);
         p.ports = vec![3000];
-        assert_eq!(classify_cli(&p).unwrap(), (Kind::DevServer, "server.js".into()));
+        assert_eq!(classify_cli(&p).unwrap(), (Kind::DevServer, "Node".into()));
         // Without a port it is just a process.
         p.ports.clear();
         assert!(classify_cli(&p).is_none());
@@ -597,5 +712,96 @@ mod tests {
         p.exe = Some("/System/Library/CoreServices/x".into());
         assert!(is_os_critical(&p));
         assert!(!is_os_critical(&proc("node", &[])));
+    }
+
+    // ---- Cases found with the detection lab (scripts/lab) ----
+
+    fn with_exe(name: &str, exe: &str, cmd: &[&str]) -> ProcInfo {
+        ProcInfo { exe: Some(exe.into()), ..proc(name, cmd) }
+    }
+
+    #[test]
+    fn homebrew_python_is_command_line_work_not_an_app() {
+        let exe = "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python";
+        assert_eq!(app_root(exe), None, "Python.app must not swallow every python tool");
+        // A real app is still an app.
+        assert!(app_root("/Applications/Slack.app/Contents/MacOS/Slack").is_some());
+        let mut uv = with_exe("Python", exe, &[exe, "-m", "uvicorn", "main:app", "--reload"]);
+        uv.ports = vec![8000];
+        assert_eq!(classify_cli(&uv).unwrap(), (Kind::DevServer, "Uvicorn".into()));
+        let mut dj = with_exe("Python", exe, &[exe, "/x/proj/manage.py", "runserver"]);
+        dj.ports = vec![8001];
+        assert_eq!(classify_cli(&dj).unwrap(), (Kind::DevServer, "Django".into()));
+        let jl = with_exe("Python", exe, &[exe, "-m", "jupyterlab"]);
+        assert_eq!(classify_cli(&jl).unwrap().0, Kind::DevServer);
+    }
+
+    #[test]
+    fn mobile_toolchains() {
+        let fl = proc("dart", &["dart", "--packages=x", "/x/flutter/bin/cache/flutter_tools.snapshot", "run"]);
+        assert_eq!(classify_cli(&fl).unwrap(), (Kind::DevServer, "Flutter".into()));
+        let rn = proc("node", &["node", "/x/app/node_modules/react-native/cli.js", "start"]);
+        assert_eq!(classify_cli(&rn).unwrap().0, Kind::DevServer);
+        let gradle = proc("java", &["java", "-Xmx2g", "-cp", "/x/gradle-launcher-8.10.jar", "org.gradle.launcher.daemon.bootstrap.GradleDaemon", "8.10"]);
+        assert_eq!(classify_cli(&gradle).unwrap(), (Kind::LanguageServer, "Gradle daemon".into()));
+        let emu = with_exe("qemu-system-aarch64", "/Users/x/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64", &["qemu-system-aarch64", "-avd", "Pixel_8"]);
+        assert_eq!(classify_cli(&emu).unwrap(), (Kind::LocalModel, "Android emulator".into()));
+        // Some other qemu (a homebrew VM) is not an Android emulator.
+        let vm = with_exe("qemu-system-aarch64", "/opt/homebrew/bin/qemu-system-aarch64", &["qemu-system-aarch64"]);
+        assert!(classify_cli(&vm).is_none_or(|c| c.1 != "Android emulator"));
+    }
+
+    #[test]
+    fn programs_you_built_listening_on_a_port() {
+        let mut go = with_exe("api", "/Users/x/Library/Caches/go-build/b001/exe/api", &["api"]);
+        go.ports = vec![8080];
+        assert_eq!(classify_cli(&go).unwrap(), (Kind::DevServer, "api".into()));
+        let mut rs = with_exe("server", "/Users/x/proj/target/debug/server", &["server"]);
+        rs.ports = vec![3000];
+        assert_eq!(classify_cli(&rs).unwrap().0, Kind::DevServer);
+        // Installed apps and system services on a port are not "dev builds".
+        let mut pg = with_exe("postgres", "/opt/homebrew/opt/postgresql@17/bin/postgres", &["postgres"]);
+        pg.ports = vec![5432];
+        assert!(classify_cli(&pg).is_none());
+        let mut ctl = with_exe("ControlCenter", "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter", &["ControlCenter"]);
+        ctl.ports = vec![5000];
+        assert!(classify_cli(&ctl).is_none());
+        // Without a port, a built binary is just a program.
+        let quiet = with_exe("tool", "/Users/x/proj/target/release/tool", &["tool"]);
+        assert!(classify_cli(&quiet).is_none());
+    }
+
+    #[test]
+    fn gg_coder_by_package_name() {
+        let gg = proc("node", &["/opt/homebrew/bin/node", "/x/node_modules/@kenkaiiii/ggcoder/dist/cli.js"]);
+        assert_eq!(classify_cli(&gg).unwrap(), (Kind::AgentSession, "GG Coder".into()));
+    }
+
+    #[test]
+    fn mcp_servers_are_named_by_their_package() {
+        let via_npx = proc("npx", &["npx", "-y", "@playwright/mcp@latest"]);
+        assert_eq!(classify_cli(&via_npx).unwrap(), (Kind::McpServer, "playwright".into()));
+        let child = proc("node", &["/opt/homebrew/bin/node", "/x/node_modules/@playwright/mcp/cli.js"]);
+        assert_eq!(classify_cli(&child).unwrap(), (Kind::McpServer, "playwright".into()));
+        let npm_exec = proc("npm", &["npm exec @playwright/mcp", "-e", "x"]);
+        assert_eq!(classify_cli(&npm_exec).unwrap(), (Kind::McpServer, "playwright".into()));
+        assert_eq!(classify_cli(&child).unwrap(), (Kind::McpServer, "playwright".into()));
+        let ctx7 = proc("node", &["node", "/x/node_modules/@upstash/context7-mcp/dist/index.js"]);
+        assert_eq!(classify_cli(&ctx7).unwrap(), (Kind::McpServer, "context7-mcp".into()));
+    }
+
+    #[test]
+    fn unknown_servers_are_named_by_runtime_not_a_random_arg() {
+        let mut deno = proc("deno", &["deno", "run", "-A", "--watch", "main.ts"]);
+        deno.ports = vec![8000];
+        assert_eq!(classify_cli(&deno).unwrap(), (Kind::DevServer, "Deno".into()));
+        let mut php = proc("php", &["php", "-S", "127.0.0.1:8006"]);
+        php.ports = vec![8006];
+        assert_eq!(classify_cli(&php).unwrap(), (Kind::DevServer, "PHP".into()));
+        let mut node = proc("node", &["node", "server.js"]);
+        node.ports = vec![3000];
+        assert_eq!(classify_cli(&node).unwrap(), (Kind::DevServer, "Node".into()));
+        let rr = proc("node", &["node", "/x/node_modules/@react-router/dev/bin.js", "dev"]);
+        assert_eq!(classify_cli(&rr).unwrap(), (Kind::DevServer, "React Router".into()));
     }
 }
