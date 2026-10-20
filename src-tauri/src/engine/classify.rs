@@ -85,8 +85,10 @@ pub fn is_wrapper(p: &ProcInfo) -> bool {
 }
 
 /// argv[0..n] lowercased and joined, for substring rules.
+/// argv[0..n] lowercased with `/` separators (Windows paths use `\\`), for
+/// package rules like "@google/gemini-cli".
 fn arg_text(p: &ProcInfo, n: usize) -> String {
-    p.cmd.iter().take(n).map(|a| a.to_ascii_lowercase()).collect::<Vec<_>>().join(" ")
+    p.cmd.iter().take(n).map(|a| a.to_ascii_lowercase().replace('\\', "/")).collect::<Vec<_>>().join(" ")
 }
 
 const AGENTS: &[(&str, &str)] = &[
@@ -318,7 +320,17 @@ fn strip_ext(s: &str) -> String {
 /// "chrome-devtools-mcp", ".../@modelcontextprotocol/server-memory/..." -> "memory".
 fn mcp_name(arg: &str) -> Option<String> {
     let lower = arg.to_ascii_lowercase();
-    let segs: Vec<&str> = lower.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    let all: Vec<&str> = lower.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    // Inside node_modules only the package path counts: a project folder
+    // called "my-mcp-app" must not name (or make) an MCP server.
+    let segs: Vec<&str> = match all.iter().rposition(|s| *s == "node_modules") {
+        Some(i) => all[i + 1..].to_vec(),
+        None => all,
+    };
+    // npm/npx's own script (Windows shows it in the command line) is never the server.
+    if segs.first().is_some_and(|s| *s == "npm") {
+        return None;
+    }
     for (i, seg) in segs.iter().enumerate().rev() {
         if seg.starts_with("@modelcontextprotocol") {
             let next = segs.get(i + 1).map(|n| strip_ext(n.split('@').next().unwrap_or(n)));
@@ -809,5 +821,27 @@ mod tests {
         assert_eq!(classify_cli(&node).unwrap(), (Kind::DevServer, "Node".into()));
         let rr = proc("node", &["node", "/x/node_modules/@react-router/dev/bin.js", "dev"]);
         assert_eq!(classify_cli(&rr).unwrap(), (Kind::DevServer, "React Router".into()));
+    }
+
+    #[test]
+    fn windows_paths_match_scoped_packages_and_mcp_names() {
+        let gem = proc("node.exe", &["node", r"C:\Users\me\AppData\Roaming\npm\node_modules\@google\gemini-cli\dist\index.js"]);
+        assert_eq!(classify_cli(&gem).unwrap(), (Kind::AgentSession, "Gemini CLI".into()));
+        let gg = proc("node.exe", &["node", r"C:\Users\me\AppData\Roaming\npm\node_modules\@kenkaiiii\ggcoder\dist\cli.js"]);
+        assert_eq!(classify_cli(&gg).unwrap(), (Kind::AgentSession, "GG Coder".into()));
+        let npx = proc("node.exe", &["node", r"C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js", "@playwright/mcp@latest"]);
+        assert_eq!(classify_cli(&npx).unwrap(), (Kind::McpServer, "playwright".into()));
+    }
+
+    #[test]
+    fn a_project_folder_named_mcp_is_not_an_mcp_server() {
+        let mut vite = proc("node", &["node", "/Users/me/code/my-mcp-app/node_modules/vite/bin/vite.js"]);
+        vite.ports = vec![5173];
+        assert_eq!(classify_cli(&vite).unwrap(), (Kind::DevServer, "Vite".into()));
+        let real = proc("node", &["node", "/Users/me/code/my-mcp-app/node_modules/@playwright/mcp/cli.js"]);
+        assert_eq!(classify_cli(&real).unwrap(), (Kind::McpServer, "playwright".into()));
+        // A server you wrote yourself, run from its own folder, still counts.
+        let own = proc("node", &["node", "/Users/me/mcp-servers/github-mcp/index.js"]);
+        assert_eq!(classify_cli(&own).unwrap().0, Kind::McpServer);
     }
 }

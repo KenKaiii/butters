@@ -251,7 +251,9 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
 
     // 2. Command-line work: agent sessions, dev servers, MCP servers...
     let mut by_start: Vec<&ProcInfo> = procs.iter().filter(|p| p.owned_by_user && !claimed.contains(&p.pid)).collect();
-    by_start.sort_by_key(|p| (p.start_time, p.pid));
+    // Parents before children: start time, then depth (Windows pids aren't
+    // in start order and start times have one-second resolution).
+    by_start.sort_by_key(|p| (p.start_time, tree.ancestors(p.pid).len(), p.pid));
     for p in by_start {
         if claimed.contains(&p.pid) || p.pid == self_pid {
             continue;
@@ -337,7 +339,8 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
             .filter(|m| !claimed.contains(m) && !app_of.contains_key(m) && tree.by_pid[m].owned_by_user)
             .collect();
         claimed.extend(members.iter().copied());
-        let name = p.name.split_whitespace().next().unwrap_or(&p.name).to_string();
+        let name = p.name.split_whitespace().next().unwrap_or(&p.name);
+        let name = name.strip_suffix(".exe").or_else(|| name.strip_suffix(".EXE")).unwrap_or(name).to_string();
         groups.push(Group {
             key: format!("process:{}", classify::base(&name)),
             kind: Kind::Process,
@@ -979,5 +982,22 @@ mod tests {
         let out = assess(&[launchd(), w], &Context { self_pid: 999, ..Default::default() });
         let a = out.iter().find(|a| a.group.root == 95).expect("leaking process is a candidate");
         assert!(matches!(&a.verdict, Verdict::Suggest { reason, recommended: false, .. } if reason.starts_with("Grew 1.1 GB")));
+    }
+
+    #[test]
+    fn child_with_a_lower_pid_still_joins_its_parent_group() {
+        // Windows: next-server (child) got a lower pid than `next dev` (parent),
+        // and both started in the same second.
+        let mut parent = p(500, 4242, "node.exe", &["node", "/x/node_modules/next/dist/bin/next", "dev"]);
+        parent.start_time = 100;
+        let mut child = p(120, 500, "node.exe", &["next-server (v15.5.0)", "-e", "x"]);
+        child.start_time = 100;
+        child.ports = vec![3000];
+        child.memory = 300 * MB;
+        let out = assess(&[parent, child], &Context { self_pid: 999, ..Default::default() });
+        let nexts: Vec<_> = out.iter().filter(|a| a.group.title == "Next.js dev server").collect();
+        assert_eq!(nexts.len(), 1, "one row, not two");
+        assert_eq!(nexts[0].group.root, 500);
+        assert!(nexts[0].group.members.contains(&120));
     }
 }

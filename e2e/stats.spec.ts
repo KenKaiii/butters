@@ -87,7 +87,9 @@ test("stats opens in place: no drop-in from below, no re-count when switching ta
     samples.push((await heading.boundingBox())!.y);
     await page.waitForTimeout(30);
   }
-  for (const y of samples) expect(Math.abs(y - mainTop)).toBeLessThan(8);
+  // The bug was a ~180 px drop-in; header layouts differ by a few px (fonts
+  // render slightly differently on CI), so allow that.
+  for (const y of samples) expect(Math.abs(y - mainTop)).toBeLessThan(24);
   const num = page.locator(".hero .num");
   await expect(num).toHaveText("41.2", { timeout: 2000 });
   // Switching tabs doesn't replay the count from a low number.
