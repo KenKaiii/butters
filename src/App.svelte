@@ -226,17 +226,23 @@
     // closed at once (in parallel), and each melts the moment it's done: a
     // quick dev server doesn't wait for an app that's still saving.
     for (const s of batch) pending[s.key] = true;
-    await Promise.all(
-      batch.map(async (s) => {
-        const out = await closeOne(s, false);
-        if (out.status === "closed") {
-          closed.push(s);
-          outs.push(out);
-          delete overrides[s.key];
-          await meltInTurn(s);
-        }
-      }),
-    );
+    const closeAll = (group: Suggestion[]) =>
+      Promise.all(
+        group.map(async (s) => {
+          const out = await closeOne(s, false);
+          if (out.status === "closed") {
+            closed.push(s);
+            outs.push(out);
+            delete overrides[s.key];
+            await meltInTurn(s);
+          }
+        }),
+      );
+    // Docker itself goes last: its containers and clean-ups need Docker's
+    // engine running, and quitting Docker would stop it mid-way.
+    const runtimes = batch.filter((s) => s.kind === "container_runtime");
+    await closeAll(batch.filter((s) => s.kind !== "container_runtime"));
+    await closeAll(runtimes);
     if (closed.length) {
       await sleep(ms(MELT_MS * 0.7));
       celebrate(closed, outs);

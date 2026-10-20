@@ -211,3 +211,43 @@ test("rows that fit don't sprout redundant tooltips", async ({ page }) => {
   await page.waitForTimeout(700);
   await expect(page.locator(".butter-tip.on")).toHaveCount(0);
 });
+
+test("Docker quits only after its clean-ups and containers are done", async ({ page }) => {
+  const MB = 1024 ** 2;
+  await open(page, {
+    suggestions: [
+      { id: "dk", key: "app:docker", kind: "container_runtime", title: "Docker", detail: null, reason: "No containers running", note: null, memory: 1500 * MB, cpu: 0, ports: [], recommended: true, polite: true, verb: "Quit", disk: 0 },
+    ],
+    services: [
+      { id: "k1", key: "docker:build-cache", kind: "docker_disk", title: "Docker build cache", detail: null, reason: "Unused 25 h", note: null, memory: 0, cpu: 0, ports: [], recommended: true, polite: true, verb: "Clear", disk: 12.7e9 },
+      { id: "c1", key: "docker:db", kind: "docker_container", title: "Container: db", detail: null, reason: "No activity 6 d", note: null, memory: 300 * MB, cpu: 0, ports: [], recommended: true, polite: true, verb: "Stop", disk: 0 },
+    ],
+    cachedServices: null,
+    sweep: [],
+  });
+  // Slow clean-ups (like a real `docker builder prune`), and log when each close starts and ends.
+  await page.evaluate(() => {
+    const i = (window as any).__TAURI_INTERNALS__;
+    const o = i.invoke;
+    (window as any).__log = [];
+    i.invoke = async (c: string, a: any) => {
+      if (c !== "close_item") return o(c, a);
+      (window as any).__log.push(`start:${a.id}`);
+      if (a.id !== "dk") await new Promise((r) => setTimeout(r, 500));
+      const r = await o(c, a);
+      (window as any).__log.push(`end:${a.id}`);
+      return r;
+    };
+  });
+  await expect(page.getByRole("button", { name: "Close 3" })).toBeVisible();
+  await page.getByRole("button", { name: "Close 3" }).click();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__log.length), { timeout: 5000 }).toBe(6);
+  const log: string[] = await page.evaluate(() => (window as any).__log);
+  const at = (e: string) => log.indexOf(e);
+  // The clean-up and the container finish before Docker even starts quitting.
+  expect(at("start:dk")).toBeGreaterThan(at("end:k1"));
+  expect(at("start:dk")).toBeGreaterThan(at("end:c1"));
+  // The two Docker jobs still run side by side.
+  expect(at("start:c1")).toBeLessThan(at("end:k1"));
+});
