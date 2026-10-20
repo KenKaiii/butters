@@ -16,24 +16,36 @@ test("memory is a butter stick that melts as RAM fills", async ({ page }) => {
   const stick = page.locator(".stick .stick-body");
   await expect(page.getByRole("meter", { name: "Memory used" })).toBeVisible();
   const scale = async () => stick.evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
-  await page.waitForTimeout(1200);
-  const s = await scale();
-  expect(s).toBeGreaterThan(0.06);
-  expect(s).toBeLessThan(0.5); // ~18 of 24 GB used -> about a quarter of the stick left
+  // ~18 of 24 GB used -> about a quarter of the stick left. Poll: the stick
+  // eases into place, and slow machines get there later.
+  await expect.poll(scale, { timeout: 8000 }).toBeLessThan(0.5);
+  expect(await scale()).toBeGreaterThan(0.06);
 });
 
 test("CPU is sizzling butter: the fill is the value, bubbles only inside it", async ({ page }) => {
   await open(page);
+  // Hold CPU at 42% (the fake backend otherwise flips it every 2 s, and a
+  // slow machine could read the bar and the number on different ticks).
+  await page.evaluate(() => {
+    const i = (window as any).__TAURI_INTERNALS__;
+    const o = i.invoke;
+    i.invoke = async (c: string, a: unknown) => {
+      const r: any = await o(c, a);
+      if (c === "scan" || c === "live_stats") r.stats.cpu = 42;
+      return r;
+    };
+  });
   const meter = page.getByRole("meter", { name: "CPU in use" });
   await expect(meter).toBeVisible();
   // Nothing on the bar looks like a draggable handle.
   await expect(meter.locator(".pat")).toHaveCount(0);
-  await page.waitForTimeout(1200);
-  const pct = Number(await meter.getAttribute("aria-valuenow"));
-  expect(pct).toBeGreaterThan(20);
+  // The number glides to 42; wait for it to land instead of a fixed pause.
+  await expect(meter).toHaveAttribute("aria-valuenow", "42", { timeout: 8000 });
+  const pct = 42;
   // Fill length matches the number.
-  const fill = await meter.locator(".fill").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--cpu")));
-  expect(Math.abs(fill * 100 - pct)).toBeLessThan(3);
+  await expect
+    .poll(() => meter.locator(".fill").evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--cpu"))), { timeout: 4000 })
+    .toBeCloseTo(0.42, 2);
   // Every sizzling bubble sits inside the filled part.
   const bubbles = await meter.locator(".bubble.on").evaluateAll((els) => els.map((e) => parseFloat((e as HTMLElement).style.left)));
   expect(bubbles.length).toBeGreaterThan(0);

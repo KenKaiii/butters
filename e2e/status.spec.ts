@@ -23,10 +23,15 @@ for (const level of ["smooth", "busy", "strained"] as const) {
     await page.goto("/");
     const h1 = page.getByRole("heading", { level: 1 });
     await expect(h1).not.toHaveText("Checking…");
-    await page.waitForTimeout(1100); // let the shape settle
-
     const pat = page.locator(".status-pat");
     await expect(pat).toHaveClass(new RegExp(`level-${level}`));
+    // Let its shape transition finish (900 ms) before measuring; wait on the
+    // animations themselves rather than a fixed pause.
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll(".status-pat, .status-pat *")].every((el) =>
+        el.getAnimations().every((a) => a.playState !== "running" || (a.effect as KeyframeEffect)?.getComputedTiming().iterations === Infinity),
+      ),
+    );
     expect(await pat.locator(".body > path").count()).toBe(3); // side, front, top
 
     const icon = (await pat.boundingBox())!;
