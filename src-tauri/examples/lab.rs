@@ -14,10 +14,13 @@ use butters_lib::{platform, sampler};
 use serde_json::Value;
 
 fn main() {
-    let home = std::env::var("HOME").unwrap();
-    let lab = format!("{home}/.butters-lab");
-    let scenarios: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(format!("{lab}/scenarios.json")).expect("run lab.py up first")).unwrap();
-    let state: Value = serde_json::from_str(&std::fs::read_to_string(format!("{lab}/state.json")).unwrap()).unwrap();
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).expect("home folder");
+    let lab_dir = std::path::Path::new(&home).join(".butters-lab");
+    let lab = lab_dir.to_string_lossy().into_owned();
+    let projects = lab_dir.join("projects");
+    let scenarios: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(lab_dir.join("scenarios.json")).expect("run lab.py up first")).unwrap();
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(lab_dir.join("state.json")).unwrap()).unwrap();
+    let failed: HashMap<String, String> = state["failed"].as_object().map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()).unwrap_or_default();
     let roots: HashMap<String, u32> = state["procs"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_u64().unwrap() as u32)).collect();
 
     let ports = sampler::listening_ports();
@@ -55,7 +58,8 @@ fn main() {
             cur = by_pid.get(&c).copied().flatten();
         }
         let cwd = cwd_of.get(&pid)?;
-        cwd.strip_prefix(&format!("{lab}/projects/")).map(|r| r.split('/').next().unwrap_or(r).to_string())
+        let rel = std::path::Path::new(cwd).strip_prefix(&projects).ok()?;
+        rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned())
     };
     let aged: HashSet<String> = scenarios.iter().filter(|s| s["aged"].as_bool() == Some(true)).map(|s| s["id"].as_str().unwrap().to_string()).collect();
     // The shell parents of non-orphan scenarios stand in for a terminal you
@@ -94,6 +98,12 @@ fn main() {
         let id = sc["id"].as_str().unwrap();
         let expect = sc["expect"].as_str().unwrap();
         let who = sc["who"].as_str().unwrap();
+        if let Some(err) = failed.get(id) {
+            bad += 1;
+            fails.push(id.to_string());
+            println!("FAIL  {id:15} want {expect:8} {who}\n      didn't start: {err}");
+            continue;
+        }
         if !roots.contains_key(id) {
             println!("SKIP  {id:15} {who} (tool not installed)");
             continue;
@@ -116,4 +126,7 @@ fn main() {
         println!("{} {id:15} want {expect:8} {who}\n      got: {}", if pass { "PASS " } else { "FAIL " }, got.join(" | "));
     }
     println!("\n{ok} pass, {bad} fail{}", if fails.is_empty() { String::new() } else { format!(": {}", fails.join(", ")) });
+    if bad > 0 {
+        std::process::exit(1);
+    }
 }

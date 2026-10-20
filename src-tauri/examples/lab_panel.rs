@@ -5,7 +5,8 @@ use butters_lib::engine::assess::{self, Context, Verdict};
 use butters_lib::{platform, sampler};
 
 fn main() {
-    let lab = format!("{}/.butters-lab", std::env::var("HOME").unwrap());
+    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).expect("home folder");
+    let lab = std::path::Path::new(&home).join(".butters-lab").to_string_lossy().into_owned();
     let ports = sampler::listening_ports();
     let mut s = sampler::Sampler::new();
     let mut procs = s.snapshot(&ports);

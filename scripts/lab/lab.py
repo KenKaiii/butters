@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Butters detection lab: recreate a heavy agent-user's machine, then score
-what Butters picks up.
+what Butters picks up. Works on macOS and Windows (and runs in CI on both).
 
-    python3 scripts/lab/lab.py up      # start ~45 scenarios in ~/.butters-lab
-    python3 scripts/lab/lab.py down    # stop everything the lab started
+    python scripts/lab/lab.py up      # start ~76 scenarios in ~/.butters-lab
+    cd src-tauri && cargo run --release --example lab   # score them (exit 1 on any miss)
+    python scripts/lab/lab.py down    # stop everything the lab started
 
 Every process runs under ~/.butters-lab (never your real projects) and copies
-the *real* process shape of the tool it stands in for: the same executable
-name and path layout, the same argv, wrapper chains (npm -> sh -> vite), a
-listening port where the real tool has one, and an "orphan" (terminal gone)
-or "inside a terminal" parent. The verdicts are scored by `cargo run
---example lab` in src-tauri, which runs the real Butters engine.
+the *real* process shape of the tool it stands in for, per platform: the same
+executable name and folder layout (claude / claude.exe, the Android SDK's
+qemu, Go's go-build temp folder...), the same arguments, the same wrapper
+chains (npm -> sh -c / cmd /c -> vite), a listening port where the real tool
+has one, and either an "orphan" parent (the terminal that started it is gone)
+or a terminal shell that is still open. Native tools are played by hog.rs,
+copied to the real tool's path and name.
 """
 import json
 import os
@@ -21,36 +24,52 @@ import sys
 import time
 from pathlib import Path
 
+WIN = os.name == "nt"
+EXE = ".exe" if WIN else ""
+HERE = Path(__file__).resolve().parent
 LAB = Path.home() / ".butters-lab"
 STATE = LAB / "state.json"
-HOG = LAB / "bin" / "hog"
-NODE = shutil.which("node") or "/opt/homebrew/bin/node"
-PY = shutil.which("python3") or "/opt/homebrew/bin/python3"
+HOG = LAB / "bin" / f"hog{EXE}"
+NODE = shutil.which("node")
+PY = sys.executable
 BUN = shutil.which("bun")
 DENO = shutil.which("deno")
 
-# Small JS bodies. SERVER listens on a port (like every dev server), IDLE
-# just holds memory, SPIN burns a core, LEAK grows.
+# Small JS bodies. SERVER listens on a port (like every dev server), IDLE just
+# holds memory, SPIN burns a core, LEAK grows.
 JS = {
     "server": "const b=Buffer.alloc((+process.env.MB||60)*1048576,1);process.getBuiltinModule('http').createServer((q,s)=>s.end('ok')).listen(+process.env.PORT||0,'127.0.0.1');setInterval(()=>b[0]++,1e9)",
     "idle": "const b=Buffer.alloc((+process.env.MB||80)*1048576,1);setInterval(()=>b[0]++,1e9)",
     "spin": "for(;;){Math.sqrt(Math.random())}",
+    "leak": "const k=[];setInterval(()=>k.push(Buffer.alloc(8*1048576,1)),2000)",
 }
 PYSRV = "import http.server,os,socketserver;b=bytearray(int(os.environ.get('MB','60'))*1048576);socketserver.TCPServer(('127.0.0.1',int(os.environ.get('PORT','0'))),http.server.SimpleHTTPRequestHandler).serve_forever()"
 PYIDLE = "import os,time;b=bytearray(int(os.environ.get('MB','80'))*1048576)\nwhile True: time.sleep(5)"
 
-# id, what a person calls it, expectation, how to start it.
-#   expect: "suggest"  -> must be listed (recommended or not)
-#           "pretick"  -> must be listed AND pre-ticked
-#           "quiet"    -> must NOT be listed (fresh / active / protected work)
-#           "protect"  -> must be protected, never closed
-# "orphan": parent exits right away (terminal closed). "aged": the lab
-# scorer ages it (idle 3 h) so idle rules can fire without waiting hours.
+# A wrapper (npm, npx, pnpm) is a node script that renames itself like the
+# real one and starts the real work through the platform shell, then stays.
+WRAPPER = """
+process.title = %(title)s;
+const {spawn} = require('child_process');
+const win = process.platform === 'win32';
+spawn(win ? 'cmd.exe' : '/bin/sh', win ? ['/d', '/s', '/c', %(cmd)s] : ['-c', %(cmd)s], {stdio: 'ignore', windowsVerbatimArguments: win});
+setInterval(() => {}, 1e9);
+"""
+
+# expect: "pretick" must be listed AND pre-ticked; "suggest" must be listed;
+#         "quiet" must NOT be listed; "protect" must be protected.
+# orphan: parent exits at once (terminal closed). aged: the scorer sets idle
+# to 3 h (stands in for "left from yesterday").
 SCENARIOS = []
 
 
 def S(id, who, expect, kind, *, orphan=True, aged=True, **kw):
     SCENARIOS.append(dict(id=id, who=who, expect=expect, kind=kind, orphan=orphan, aged=aged, **kw))
+
+
+def N(mac, win):
+    """Native tool path inside the lab, per platform (Windows gets .exe)."""
+    return win if WIN else mac
 
 
 # ---- web dev servers (left behind after the terminal/agent closed) ----
@@ -72,9 +91,13 @@ S("plain-node", "node server.js on a port", "pretick", "node-script", script="se
 # ---- mobile ----
 S("expo", "Expo start (Metro)", "pretick", "node", pkg="expo", bin="bin/cli", args=["start"], port=8082)
 S("rn-metro", "React Native Metro bundler", "pretick", "node", pkg="react-native", bin="cli.js", args=["start"], port=8083)
-S("flutter", "flutter run (dart tool)", "pretick", "native", exe="flutter_tools.snapshot", name="dart", argv=["dart", "--packages=x", "flutter_tools.snapshot", "run"], mb=400)
-S("android-emu", "Android emulator (qemu)", "suggest", "native", exe="emulator/qemu/darwin-aarch64/qemu-system-aarch64", name="qemu-system-aarch64", mb=900, orphan=False)
-S("gradle", "Gradle daemon (Android build)", "suggest", "native", exe="gradle/GradleDaemon", name="java", argv=["java", "-Xmx2g", "-cp", "gradle-launcher.jar", "org.gradle.launcher.daemon.bootstrap.GradleDaemon", "8.10"], mb=700, orphan=True)
+S("flutter", "flutter run (dart tool)", "pretick", "native", exe=N("flutter/bin/cache/dart-sdk/bin/dart", "flutter/bin/cache/dart-sdk/bin/dart.exe"),
+  argv=["dart", "--packages=x", "{native}/flutter/bin/cache/flutter_tools.snapshot", "run"], mb=400)
+S("android-emu", "Android emulator (qemu)", "suggest", "native", orphan=False, mb=900,
+  exe=N("Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64", "AppData/Local/Android/Sdk/emulator/qemu/windows-x86_64/qemu-system-x86_64.exe"),
+  argv=["qemu-system", "-avd", "Pixel_8"])
+S("gradle", "Gradle daemon (Android build)", "suggest", "native", mb=700, exe=N("jdk/bin/java", "jdk/bin/java.exe"),
+  argv=["java", "-Xmx2g", "-cp", "gradle-launcher.jar", "org.gradle.launcher.daemon.bootstrap.GradleDaemon", "8.10"])
 # ---- python / ruby / go / rust / php ----
 S("uvicorn", "FastAPI via uvicorn", "pretick", "py", mod="uvicorn", args=["main:app", "--reload"], port=8001)
 S("django", "Django runserver", "pretick", "py-script", script="manage.py", args=["runserver"], port=8002)
@@ -82,25 +105,28 @@ S("flask", "flask run", "pretick", "py", mod="flask", args=["run", "--port", "50
 S("streamlit", "Streamlit", "pretick", "py", mod="streamlit", args=["run", "app.py"], port=8501)
 S("jupyter", "Jupyter Lab", "pretick", "py", mod="jupyterlab", port=8888)
 S("py-http", "python -m http.server", "pretick", "py", mod="http.server", port=8003)
-S("rails", "Rails server (puma)", "pretick", "native", exe="bin/puma", name="ruby", argv=["ruby", "bin/rails", "server"], port=3004)
-S("go-air", "Go air live reload", "pretick", "native", exe="go/bin/air", name="air", port=8004)
-S("go-run", "go run ./cmd/api (built binary on a port)", "pretick", "native", exe="go-build/b001/exe/api", name="api", port=8005)
-S("cargo-watch", "cargo watch -x run", "pretick", "native", exe=".cargo/bin/cargo-watch", name="cargo-watch", argv=["cargo-watch", "-x", "run"])
-S("php", "php -S localhost", "pretick", "native", exe="php", name="php", argv=["php", "-S", "127.0.0.1:8006"], port=8006)
-# ---- coding agents (idle a few hours, terminal still open) ----
-S("claude", "Claude Code session", "pretick", "native", exe=".local/share/claude/versions/2.1.288", name="2.1.288", argv=["claude"], mb=300, orphan=True)
-S("claude-in-term", "Claude Code in an open terminal", "suggest", "native", exe=".local/share/claude/versions/2.1.288", name="2.1.288", argv=["claude", "--resume"], mb=300, orphan=False)
+S("rails", "Rails server (puma)", "pretick", "native", exe=N("ruby/bin/ruby", "ruby/bin/ruby.exe"), argv=["ruby", "bin/rails", "server"], port=3004)
+S("go-air", "Go air live reload", "pretick", "native", exe=N("go/bin/air", "go/bin/air.exe"), argv=["air"], port=8004)
+S("go-run", "go run ./cmd/api (built binary on a port)", "pretick", "native",
+  exe=N("var/folders/T/go-build2731/b001/exe/api", "AppData/Local/Temp/go-build2731/b001/exe/api.exe"), argv=["api"], port=8005)
+S("cargo-watch", "cargo watch -x run", "pretick", "native", exe=N(".cargo/bin/cargo-watch", ".cargo/bin/cargo-watch.exe"), argv=["cargo-watch", "-x", "run"])
+S("php", "php -S localhost", "pretick", "native", exe=N("php/bin/php", "php/php.exe"), argv=["php", "-S", "127.0.0.1:8006"], port=8006)
+# ---- coding agents ----
+CLAUDE = N(".local/share/claude/versions/2.1.288", ".local/bin/claude.exe")
+S("claude", "Claude Code session", "pretick", "native", exe=CLAUDE, argv=["claude"], mb=300)
+S("claude-in-term", "Claude Code in an open terminal", "suggest", "native", exe=CLAUDE, argv=["claude", "--resume"], mb=300, orphan=False)
 S("codex", "Codex CLI (node)", "pretick", "node", pkg="@openai/codex", bin="bin/codex.js", mb=200)
-S("codex-native", "Codex native binary", "pretick", "native", exe="@openai/codex/vendor/aarch64-apple-darwin/codex/codex", name="codex", mb=200)
+S("codex-native", "Codex native binary", "pretick", "native", mb=200,
+  exe=N("@openai/codex/vendor/aarch64-apple-darwin/codex/codex", "@openai/codex/vendor/x86_64-pc-windows-msvc/codex/codex.exe"), argv=["codex"])
 S("gemini", "Gemini CLI", "pretick", "node", pkg="@google/gemini-cli", bin="dist/index.js", mb=200)
-S("opencode", "OpenCode", "pretick", "native", exe=".opencode/bin/opencode", name="opencode", mb=200)
-S("aider", "Aider (python)", "pretick", "native", exe=".local/bin/aider", name="python3", argv=["python3", "/Users/x/.local/bin/aider"], mb=200)
-S("goose", "Goose", "pretick", "native", exe=".local/bin/goose", name="goose", argv=["goose", "session"], mb=200)
+S("opencode", "OpenCode", "pretick", "native", exe=N(".opencode/bin/opencode", ".opencode/bin/opencode.exe"), argv=["opencode"], mb=200)
+S("aider", "Aider (python)", "pretick", "native", exe=N("py/bin/python3", "py/python.exe"), argv=["python3", "{native}/.local/bin/aider"], mb=200)
+S("goose", "Goose", "pretick", "native", exe=N(".local/bin/goose", ".local/bin/goose.exe"), argv=["goose", "session"], mb=200)
 S("ggcoder", "GG Coder CLI", "pretick", "node", pkg="@kenkaiiii/ggcoder", bin="dist/cli.js", mb=200)
-S("cursor-agent", "Cursor Agent", "pretick", "native", exe=".local/bin/cursor-agent", name="cursor-agent", mb=200)
+S("cursor-agent", "Cursor Agent", "pretick", "native", exe=N(".local/bin/cursor-agent", ".local/bin/cursor-agent.exe"), argv=["cursor-agent"], mb=200)
 S("amp", "Amp", "pretick", "node", pkg="@sourcegraph/amp", bin="dist/main.js", mb=200)
 S("copilot", "GitHub Copilot CLI", "pretick", "node", pkg="@github/copilot", bin="index.js", mb=200)
-S("droid", "Factory Droid", "pretick", "native", exe=".factory/bin/droid", name="droid", mb=200)
+S("droid", "Factory Droid", "pretick", "native", exe=N(".factory/bin/droid", ".factory/bin/droid.exe"), argv=["droid"], mb=200)
 # ---- MCP servers (their agent session ended) ----
 S("mcp-playwright", "Playwright MCP via npx", "pretick", "npx", pkg="@playwright/mcp", bin="cli.js", mb=60)
 S("mcp-memory", "MCP memory server", "pretick", "node", pkg="@modelcontextprotocol/server-memory", bin="dist/index.js", mb=60)
@@ -111,22 +137,23 @@ S("tsc-watch", "tsc --watch", "pretick", "node", pkg="typescript", bin="bin/tsc"
 S("vitest", "vitest watch", "pretick", "node", pkg="vitest", bin="vitest.mjs", mb=150)
 S("tailwind", "tailwindcss --watch", "pretick", "node", pkg="tailwindcss", bin="lib/cli.js", args=["--watch"], mb=80)
 S("busy", "runaway node build (100% CPU)", "suggest", "node-script", script="build.js", js="spin", orphan=False, aged=False)
-S("leak", "leaking worker", "suggest", "node-script", script="worker.js", leak=True, orphan=False)
+S("leak", "leaking worker", "suggest", "node-script", script="worker.js", js="leak", orphan=False)
 # ---- a busy day: many sessions of the same tools across many projects ----
 for _i, _proj in enumerate(["shop-web", "admin", "landing", "mobile-app", "api", "docs", "blog", "dashboard"]):
     S(f"many-vite-{_i}", f"Vite in {_proj} (one of 8)", "pretick", "node", pkg="vite", bin="bin/vite.js", args=["--port", str(5200 + _i)], port=5200 + _i)
 for _i in range(6):
-    S(f"many-claude-{_i}", f"Claude Code session {_i + 1} of 6", "pretick", "native", exe=".local/share/claude/versions/2.1.288", name="2.1.288", argv=["claude"], mb=250)
+    S(f"many-claude-{_i}", f"Claude Code session {_i + 1} of 6", "pretick", "native", exe=CLAUDE, argv=["claude"], mb=250)
 for _i in range(4):
     S(f"many-mcp-{_i}", f"Playwright MCP {_i + 1} of 4 (one per session)", "pretick", "npx", pkg="@playwright/mcp", bin="cli.js", mb=60)
-
 # ---- must stay alone ----
 S("fresh-vite", "Vite you started a minute ago (in a terminal)", "quiet", "npm", pkg="vite", bin="bin/vite.js", port=5177, orphan=False, aged=False)
-S("fresh-claude", "Claude Code you're using right now", "quiet", "native", exe=".local/share/claude/versions/2.1.288", name="2.1.288", argv=["claude"], mb=300, orphan=False, aged=False)
+S("fresh-claude", "Claude Code you're using right now", "quiet", "native", exe=CLAUDE, argv=["claude"], mb=300, orphan=False, aged=False)
 S("small-script", "tiny one-off script (no port, small)", "quiet", "node-script", script="tiny.js", js="idle", mb=5, orphan=False)
-S("redis", "redis-server (brew service, launchd)", "quiet", "native", exe="redis-server", name="redis-server", port=6380, orphan=True)
-S("postgres", "postgres (brew service, launchd)", "quiet", "native", exe="postgres", name="postgres", argv=["postgres", "-D", "/opt/homebrew/var/postgresql@17"], port=5433, orphan=True)
+S("redis", "redis-server (a service)", "quiet", "native", exe=N("redis/bin/redis-server", "redis/redis-server.exe"), argv=["redis-server"], port=6380)
+S("postgres", "postgres (a service)", "quiet", "native", exe=N("pg/bin/postgres", "pg/bin/postgres.exe"), argv=["postgres", "-D", "data"], port=5433)
 
+
+# ------------------------------------------------------------------ helpers
 
 def state():
     try:
@@ -145,15 +172,30 @@ def project(id):
     return d
 
 
-def write_pkg(proj, pkg, binpath, body):
-    f = proj / "node_modules" / pkg / binpath
-    f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(body)
-    return f
+def write(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    return path
 
 
-def native_copy(rel, name):
-    """A copy of the stand-in binary at a realistic path, so exe/argv match the real tool."""
+def pkg_file(proj, pkg, binpath, body):
+    return write(proj / "node_modules" / pkg / binpath, body)
+
+
+def q(path):
+    """A path quoted for a shell command line (paths with spaces on Windows)."""
+    return f'"{path}"'
+
+
+def build_hog():
+    if HOG.exists():
+        return
+    HOG.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["rustc", "-O", "-o", str(HOG), str(HERE / "hog.rs")], check=True)
+
+
+def native_copy(rel):
+    """The stand-in binary at the real tool's path and name."""
     target = LAB / "native" / rel
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
@@ -161,159 +203,201 @@ def native_copy(rel, name):
     return target
 
 
+# ------------------------------------------------------------------ launching
+
+def spawn_orphan(argv, exe, env, cwd):
+    """Starts the tool with a parent that exits at once (the terminal is gone)."""
+    if WIN:
+        # A helper process starts it detached and exits: the tool's parent is gone.
+        helper = (
+            "import json,subprocess,sys;a=json.loads(sys.argv[1]);"
+            "p=subprocess.Popen(a['argv'],executable=a['exe'],cwd=a['cwd'],env=a['env'],"
+            "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,"
+            "creationflags=0x00000008|0x00000200);print(p.pid)"
+        )
+        out = subprocess.run([PY, "-c", helper, json.dumps({"argv": argv, "exe": exe, "cwd": str(cwd), "env": env})],
+                             capture_output=True, text=True, check=True)
+        return int(out.stdout.strip())
+    # POSIX double fork: re-parented to launchd/init, its own session.
+    r, w = os.pipe()
+    if os.fork() == 0:
+        os.setsid()
+        pid = os.fork()
+        if pid == 0:
+            os.chdir(cwd)
+            devnull = os.open(os.devnull, os.O_RDWR)
+            for fd in (0, 1, 2):
+                os.dup2(devnull, fd)
+            os.execve(exe, argv, env)
+        os.write(w, str(pid).encode())
+        os._exit(0)
+    os.close(w)
+    pid = int(os.read(r, 32).decode())
+    os.close(r)
+    os.wait()
+    return pid
+
+
+def spawn_in_terminal(argv, exe, env, cwd):
+    """Starts the tool inside a shell that stays open, like a terminal tab.
+    Returns the shell's pid (the scenario's root)."""
+    if WIN:
+        line = subprocess.list2cmdline([exe, *argv[1:]])
+        shell = subprocess.Popen(["cmd.exe", "/d", "/k", line], cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 creationflags=0x00000200 | 0x08000000)
+        return shell.pid
+    # zsh's ARGV0 sets the tool's argv[0] (e.g. "claude" for the versioned binary).
+    line = f"ARGV0={q(argv[0])} {q(exe)} " + " ".join(q(a) for a in argv[1:])
+    shell = subprocess.Popen(["/bin/zsh", "-il"], cwd=cwd, env=env, stdin=subprocess.PIPE,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    shell.stdin.write((line + "\n").encode())
+    shell.stdin.flush()
+    return shell.pid
+
+
 def launch(sc):
     proj = project(sc["id"])
-    env = {**os.environ, "MB": str(sc.get("mb", 60)), "PORT": str(sc.get("port", 0)), "HOG_MB": str(sc.get("mb", 60))}
+    mb = sc.get("mb", 60)
+    env = {**os.environ, "MB": str(mb), "PORT": str(sc.get("port", 0)), "HOG_MB": str(mb)}
     if sc.get("port") is not None:
         env["HOG_PORT"] = str(sc["port"])
-    if sc.get("leak"):
-        env["HOG_GROW"] = "8"
     js = JS[sc.get("js", "server" if sc.get("port") else "idle")]
     k = sc["kind"]
-    if k in ("node", "npx"):
-        f = write_pkg(proj, sc["pkg"], sc["bin"], js)
-        argv = [NODE, str(f), *sc.get("args", [])]
-        if k == "npx":
-            # npx: `npm exec` (node) -> sh -c -> node .../cli.js
-            argv = ["/bin/sh", "-c", f'exec -a "npm exec {sc["pkg"]}" {NODE} -e "require(\'child_process\').spawn(process.argv[1],process.argv.slice(2),{{stdio:\'inherit\'}})" {NODE} {f}']
-    elif k == "npm":
-        f = write_pkg(proj, sc["pkg"], sc["bin"], js)
-        # npm run dev: node (titled "npm run dev") -> sh -c vite -> node vite.js
-        argv = ["/bin/sh", "-c", f'exec -a "npm run dev" {NODE} -e "require(\'child_process\').spawn(\'/bin/sh\',[\'-c\',process.argv[1]],{{stdio:\'inherit\'}});setInterval(()=>{{}},1e9)" "{NODE} {f} {" ".join(sc.get("args", []))}"']
-    elif k == "pnpm":
-        f = write_pkg(proj, sc["pkg"], sc["bin"], js)
-        pnpm_js = write_pkg(proj, ".pnpm-bin", "pnpm.cjs", f"require('child_process').spawn('/bin/sh',['-c','{NODE} {f}'],{{stdio:'inherit'}});setInterval(()=>{{}},1e9)")
-        argv = [NODE, str(pnpm_js), "dev"]
+    exe = NODE
+    if k == "node":
+        f = pkg_file(proj, sc["pkg"], sc["bin"], js)
+        argv = ["node", str(f), *sc.get("args", [])]
+    elif k in ("npm", "npx", "pnpm"):
+        f = pkg_file(proj, sc["pkg"], sc["bin"], js)
+        child = f"{q(NODE)} {q(f)} " + " ".join(sc.get("args", []))
+        if WIN:
+            # Like real npm on Windows: cmd /d /s /c "<command>". With /s, cmd
+            # strips one outer pair of quotes, so the whole line gets its own.
+            child = f'"{child.strip()}"'
+        if k == "npm":
+            title, wrapper, wargs = "npm run dev", pkg_file(proj, "npm", "bin/npm-cli.js", ""), ["run", "dev"]
+        elif k == "npx":
+            title, wrapper, wargs = f"npm exec {sc['pkg']}", pkg_file(proj, "npm", "bin/npx-cli.js", ""), [sc["pkg"]]
+        else:
+            title, wrapper, wargs = "pnpm dev", pkg_file(proj, "pnpm", "bin/pnpm.cjs", ""), ["dev"]
+        wrapper.write_text(WRAPPER % {"title": json.dumps(title), "cmd": json.dumps(child)})
+        argv = ["node", str(wrapper), *wargs]
     elif k == "next":
-        f = write_pkg(proj, "next", "dist/bin/next", f"require('child_process').spawn(process.execPath,['-e',{json.dumps(JS['server'])}],{{stdio:'inherit',argv0:'next-server (v15.5.0)'}});setInterval(()=>{{}},1e9)")
-        argv = [NODE, str(f), "dev"]
+        server = json.dumps(JS["server"])
+        f = pkg_file(proj, "next", "dist/bin/next",
+                     f"require('child_process').spawn(process.execPath,['-e',{server}],{{stdio:'ignore',argv0:'next-server (v15.5.0)'}});setInterval(()=>{{}},1e9)")
+        argv = ["node", str(f), "dev"]
     elif k == "node-script":
-        f = proj / sc["script"]
-        f.write_text(JS[sc.get("js", "server" if sc.get("port") else "idle")] if not sc.get("leak") else "const k=[];setInterval(()=>k.push(Buffer.alloc(8*1048576,1)),2000)")
-        argv = [NODE, str(f)]
+        f = write(proj / sc["script"], js)
+        argv = ["node", str(f)]
     elif k == "bun":
         if not BUN:
             return None
-        f = proj / sc["script"]
-        f.write_text(f"const b=new Uint8Array(60*1048576).fill(1);Bun.serve({{port:{sc['port']},hostname:'127.0.0.1',fetch(){{return new Response('ok')}}}})")
-        argv = [BUN, "--hot", str(f)]
+        f = write(proj / sc["script"], f"const b=new Uint8Array(60*1048576).fill(1);Bun.serve({{port:{sc['port']},hostname:'127.0.0.1',fetch(){{return new Response('ok')}}}})")
+        exe, argv = BUN, ["bun", "--hot", str(f)]
     elif k == "deno":
         if not DENO:
             return None
-        f = proj / sc["script"]
-        f.write_text(f"const b=new Uint8Array(60*1048576).fill(1);Deno.serve({{port:{sc['port']},hostname:'127.0.0.1'}},()=>new Response('ok'))")
-        argv = [DENO, "run", "-A", "--watch", str(f)]
+        f = write(proj / sc["script"], f"const b=new Uint8Array(60*1048576).fill(1);Deno.serve({{port:{sc['port']},hostname:'127.0.0.1'}},()=>new Response('ok'))")
+        exe, argv = DENO, ["deno", "run", "-A", "--watch", str(f)]
     elif k == "py":
         mod = sc["mod"]
-        pkg = proj / "site" / mod.replace(".", "/")
-        pkg.mkdir(parents=True, exist_ok=True)
-        (pkg / "__init__.py").write_text("")
-        (pkg / "__main__.py").write_text(PYSRV if sc.get("port") else PYIDLE)
-        env["PYTHONPATH"] = str(proj / "site")
-        argv = [PY, "-m", mod, *sc.get("args", [])]
+        site = proj / "site"
+        write(site / mod.replace(".", "/") / "__init__.py", "")
+        write(site / mod.replace(".", "/") / "__main__.py", PYSRV if sc.get("port") else PYIDLE)
+        env["PYTHONPATH"] = str(site)
+        exe, argv = PY, ["python", "-m", mod, *sc.get("args", [])]
     elif k == "py-script":
-        f = proj / sc["script"]
-        f.write_text(PYSRV)
-        argv = [PY, str(f), *sc.get("args", [])]
+        f = write(proj / sc["script"], PYSRV)
+        exe, argv = PY, ["python", str(f), *sc.get("args", [])]
     elif k == "native":
-        exe = native_copy(sc["exe"], sc["name"])
-        shown = sc.get("argv") or [sc["name"]]
-        if sc["name"] != Path(sc["exe"]).name:
-            # macOS reports the process name from the file name; a hard link
-            # with the shown name makes it match the real tool.
-            alias = exe.parent / sc["name"]
-            if not alias.exists():
-                os.link(exe, alias)
-            exe = alias
-        # A tiny python shim execs the binary with argv[0] set like the real tool.
-        argv = [PY, "-c", "import os,sys;os.execv(sys.argv[1],sys.argv[2:])", str(exe), *shown]
+        exe = str(native_copy(sc["exe"]))
+        native = str(LAB / "native")
+        argv = [a.replace("{native}", native) for a in sc["argv"]]
     else:
         raise ValueError(k)
+    if not exe:
+        return None
+    return (spawn_orphan if sc["orphan"] else spawn_in_terminal)(argv, exe, env, proj)
 
-    if sc["orphan"]:
-        # Double fork: the intermediate exits at once, so the real process is
-        # re-parented to launchd ("terminal closed"). Its own session, so it
-        # outlives this script.
-        r, w = os.pipe()
-        if os.fork() == 0:
-            os.setsid()
-            pid = os.fork()
-            if pid == 0:
-                os.chdir(proj)
-                devnull = os.open(os.devnull, os.O_RDWR)
-                for fd in (0, 1, 2):
-                    os.dup2(devnull, fd)
-                os.execve(argv[0], argv, env)
-            os.write(w, str(pid).encode())
-            os._exit(0)
-        os.close(w)
-        pid = int(os.read(r, 32).decode())
-        os.close(r)
-        os.wait()
-        return pid
-    # In a "terminal": an interactive login zsh (like a terminal tab) stays
-    # the parent and stays alive, with the tool running inside it.
-    term = subprocess.Popen(["/bin/zsh", "-il"], env=env, cwd=proj, stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    term.stdin.write((subprocess.list2cmdline(argv) + "\n").encode())
-    term.stdin.flush()
-    return term.pid
 
+# ------------------------------------------------------------------ up / down
 
 def up():
-    assert HOG.exists(), "build it first: rustc -O -o ~/.butters-lab/bin/hog scripts/lab/hog.rs"
+    if not NODE:
+        sys.exit("Node.js is needed for the lab")
+    build_hog()
     down(quiet=True)
-    st = {"procs": {}, "started": time.time()}
+    st = {"procs": {}, "failed": {}, "started": time.time()}
     for sc in SCENARIOS:
         try:
             pid = launch(sc)
-        except Exception as e:
+        except Exception as e:  # report and keep going; the scorer counts it as a failure
+            st["failed"][sc["id"]] = str(e)
             print(f"  ! {sc['id']}: {e}")
             continue
         if pid:
             st["procs"][sc["id"]] = pid
     save(st)
     (LAB / "scenarios.json").write_text(json.dumps(SCENARIOS, indent=1))
+    # Let servers bind their ports and buffers fill before anyone scores.
+    time.sleep(float(os.environ.get("LAB_SETTLE", "10")))
     print(f"started {len(st['procs'])} of {len(SCENARIOS)} scenarios in {LAB}")
 
 
+def _kill(pid, tree=False):
+    try:
+        if WIN:
+            subprocess.run(["taskkill", "/F", *(["/T"] if tree else []), "/PID", str(pid)], capture_output=True)
+        elif tree:
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def down(quiet=False):
-    # Everything whose command line points into the lab folder, plus the
-    # recorded roots. Only the lab: nothing else matches.
-    out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
     me = os.getpid()
     n = 0
-    for line in out.splitlines():
-        pid_s, _, cmd = line.strip().partition(" ")
-        if str(LAB) in cmd and int(pid_s) != me and "lab.py" not in cmd:
-            try:
-                os.kill(int(pid_s), signal.SIGKILL)
-                n += 1
-            except ProcessLookupError:
-                pass
+    # 1. Every recorded scenario root, with its whole tree.
     for pid in state().get("procs", {}).values():
-        for kill in (lambda p: os.killpg(p, signal.SIGKILL), lambda p: os.kill(p, signal.SIGKILL)):
-            try:
-                kill(pid)
-            except (ProcessLookupError, PermissionError):
-                pass
-    # Anything whose working folder is inside the lab (python -m ..., native
-    # stand-ins whose argv doesn't mention the lab).
-    lsof = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"], capture_output=True, text=True).stdout
-    pid = None
-    for line in lsof.splitlines():
-        if line.startswith("p"):
-            pid = int(line[1:])
-        elif line.startswith("n") and pid and line[1:].startswith(str(LAB)) and pid != me:
-            try:
-                os.kill(pid, signal.SIGKILL)
+        _kill(pid, tree=True)
+        _kill(pid)
+        n += 1
+    # 2. Anything else pointing into the lab (stragglers from an earlier run).
+    lab = str(LAB)
+    if WIN:
+        ps = ["powershell", "-NoProfile", "-Command",
+              "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine,ExecutablePath | ConvertTo-Json -Compress"]
+        out = subprocess.run(ps, capture_output=True, text=True).stdout or "[]"
+        rows = json.loads(out)
+        for r in rows if isinstance(rows, list) else [rows]:
+            text = f"{r.get('CommandLine') or ''} {r.get('ExecutablePath') or ''}"
+            if lab.lower() in text.lower() and r["ProcessId"] != me and "lab.py" not in text:
+                _kill(r["ProcessId"])
                 n += 1
-            except ProcessLookupError:
-                pass
+    else:
+        out = subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            pid_s, _, cmd = line.strip().partition(" ")
+            if lab in cmd and int(pid_s) != me and "lab.py" not in cmd:
+                _kill(int(pid_s))
+                n += 1
+        # Processes whose working folder is in the lab (python -m ...).
+        lsof = subprocess.run(["lsof", "-a", "-d", "cwd", "-u", str(os.getuid()), "-Fpn"], capture_output=True, text=True).stdout
+        pid = None
+        for line in lsof.splitlines():
+            if line.startswith("p"):
+                pid = int(line[1:])
+            elif line.startswith("n") and pid and line[1:].startswith(lab) and pid != me:
+                _kill(pid)
+                n += 1
     if STATE.exists():
         STATE.unlink()
     if not quiet:
-        print(f"stopped {n} lab processes")
+        print(f"stopped lab processes ({n} signalled)")
 
 
 if __name__ == "__main__":

@@ -184,6 +184,13 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
     let mut app_members: HashMap<String, Vec<u32>> = HashMap::new();
     let mut app_of: HashMap<u32, String> = HashMap::new();
     for p in procs.iter().filter(|p| p.owned_by_user) {
+        // On Windows every .exe would count as an "app"; a recognised tool
+        // (claude.exe, codex.exe, an Android emulator, a go-run server) is
+        // command-line work instead. macOS apps live in .app bundles, so this
+        // only affects plain executables.
+        if p.exe.as_deref().is_some_and(|e| !e.contains(".app/")) && classify::classify_cli(p).is_some() {
+            continue;
+        }
         if let Some(root) = p.exe.as_deref().and_then(app_root) {
             app_members.entry(root.clone()).or_default().push(p.pid);
             app_of.insert(p.pid, root);
@@ -320,7 +327,8 @@ pub fn build_groups(procs: &[ProcInfo], self_pid: u32) -> Vec<Group> {
         if !p.owned_by_user || claimed.contains(&p.pid) || p.pid == self_pid {
             continue;
         }
-        if classify::is_shell(p) || !(p.memory >= 400 * MB || p.cpu >= 40.0) {
+        // Big, busy, or steadily growing (leak watch measured it climbing).
+        if classify::is_shell(p) || !(p.memory >= 400 * MB || p.cpu >= 40.0 || p.growth.is_some()) {
             continue;
         }
         let members: Vec<u32> = tree
@@ -896,5 +904,80 @@ mod tests {
         assert!(d.group.memory >= 6 * GB);
         assert!(matches!(d.verdict, Verdict::Suggest { recommended: true, .. }));
         assert!(!out.iter().any(|a| a.group.root == 61), "VM is not its own (system) item");
+    }
+
+    // ---- Windows: the same rules with Windows paths and .exe tools ----
+
+    fn win(pid: u32, parent: u32, name: &str, exe: &str, cmd: &[&str]) -> ProcInfo {
+        ProcInfo { exe: Some(exe.into()), ..p(pid, parent, name, cmd) }
+    }
+
+    #[test]
+    fn windows_cli_tools_are_not_desktop_apps() {
+        // Parent 4242 is gone (terminal closed): orphans.
+        let claude = {
+            let mut c = win(80, 4242, "claude.exe", r"C:\Users\me\.local\bin\claude.exe", &["claude"]);
+            c.memory = 300 * MB;
+            c
+        };
+        let emu = {
+            let mut e = win(81, 4242, "qemu-system-x86_64.exe", r"C:\Users\me\AppData\Local\Android\Sdk\emulator\qemu\windows-x86_64\qemu-system-x86_64.exe", &["qemu-system-x86_64.exe", "-avd", "Pixel_8"]);
+            e.memory = 2 * GB;
+            e.idle_secs = 3 * HOUR;
+            e
+        };
+        let go = {
+            let mut g = win(82, 4242, "api.exe", r"C:\Users\me\AppData\Local\Temp\go-build3412345\b001\exe\api.exe", &["api.exe"]);
+            g.ports = vec![8080];
+            g.memory = 40 * MB;
+            g
+        };
+        let slack = win(83, 4242, "slack.exe", r"C:\Users\me\AppData\Local\slack\app-4.41.0\slack.exe", &["slack.exe"]);
+        let out = assess(&[claude, emu, go, slack], &Context { self_pid: 999, watched_secs: 4 * HOUR, ..Default::default() });
+        let find = |root: u32| out.iter().find(|a| a.group.root == root).unwrap();
+        assert_eq!(find(80).group.kind, Kind::AgentSession);
+        assert!(matches!(find(80).verdict, Verdict::Suggest { recommended: true, .. }), "orphaned claude.exe");
+        assert_eq!(find(81).group.title, "Android emulator");
+        assert!(matches!(find(81).verdict, Verdict::Suggest { .. }));
+        assert_eq!(find(82).group.kind, Kind::DevServer);
+        assert!(matches!(find(82).verdict, Verdict::Suggest { recommended: true, .. }));
+        // A real Windows app is still an app.
+        assert_eq!(find(83).group.kind, Kind::App);
+    }
+
+    #[test]
+    fn windows_python_and_npm_chains() {
+        // py.exe -m uvicorn -> python.exe child, terminal closed.
+        let launcher = win(90, 4242, "py.exe", r"C:\Windows\py.exe", &["py", "-m", "uvicorn", "main:app"]);
+        let mut child = win(91, 90, "python.exe", r"C:\Users\me\AppData\Local\Programs\Python\Python313\python.exe", &["python.exe", "-m", "uvicorn", "main:app"]);
+        child.ports = vec![8000];
+        child.memory = 70 * MB;
+        // npm run dev on Windows: node npm-cli.js -> cmd /d /s /c vite -> node vite.js
+        let npm = win(92, 4242, "node.exe", r"C:\Program Files\nodejs\node.exe", &["node", r"C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js", "run", "dev"]);
+        let glue = win(93, 92, "cmd.exe", r"C:\Windows\System32\cmd.exe", &["cmd.exe", "/d", "/s", "/c", "vite"]);
+        let mut vite = win(94, 93, "node.exe", r"C:\Program Files\nodejs\node.exe", &["node", r"C:\work\shop\node_modules\vite\bin\vite.js"]);
+        vite.ports = vec![5173];
+        vite.memory = 90 * MB;
+        let out = assess(&[launcher, child, npm, glue, vite], &Context { self_pid: 999, ..Default::default() });
+        let uv = out.iter().find(|a| a.group.title == "Uvicorn dev server").expect("uvicorn");
+        assert!(uv.group.members.contains(&91));
+        assert!(matches!(uv.verdict, Verdict::Suggest { recommended: true, .. }));
+        let v = out.iter().find(|a| a.group.title == "Vite dev server").expect("vite");
+        assert_eq!(v.group.root, 92, "closing npm closes the whole chain");
+        assert!(v.group.members.contains(&94));
+        assert!(matches!(v.verdict, Verdict::Suggest { recommended: true, .. }));
+    }
+
+    #[test]
+    fn a_leak_is_flagged_while_still_small() {
+        // Leak watch saw it grow 1.1 GB, but right now it holds only 300 MB
+        // (it just got trimmed/compressed): still worth a look.
+        let mut w = p(95, 1, "node", &["node", "/x/worker.js"]);
+        w.parent = Some(9999); // in a terminal, not an orphan
+        w.memory = 300 * MB;
+        w.growth = Some((1_100 * MB, 25 * MIN));
+        let out = assess(&[launchd(), w], &Context { self_pid: 999, ..Default::default() });
+        let a = out.iter().find(|a| a.group.root == 95).expect("leaking process is a candidate");
+        assert!(matches!(&a.verdict, Verdict::Suggest { reason, recommended: false, .. } if reason.starts_with("Grew 1.1 GB")));
     }
 }

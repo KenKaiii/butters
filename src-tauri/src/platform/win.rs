@@ -65,10 +65,28 @@ fn visible_windows(pids: &[u32]) -> Vec<HWND> {
     state.found
 }
 
-pub fn footprint(_pid: u32) -> Option<u64> {
-    // sysinfo already reports the working set on Windows, and Windows doesn't
-    // compress idle memory as aggressively; keep that.
-    None
+pub fn footprint(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // Private bytes: memory the process owns whether or not Windows has
+    // trimmed it out of the working set (idle processes get trimmed, so the
+    // working set alone under-reports them, like RSS on macOS).
+    // SAFETY: plain Win32 calls; the handle is closed before returning and the
+    // counters struct is sized for the call.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut c = PROCESS_MEMORY_COUNTERS_EX::default();
+        let ok = GetProcessMemoryInfo(
+            h,
+            (&raw mut c).cast::<PROCESS_MEMORY_COUNTERS>(),
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        );
+        let _ = CloseHandle(h);
+        ok.ok()?;
+        let private = c.PrivateUsage as u64;
+        (private > 0).then_some(private.max(c.WorkingSetSize as u64))
+    }
 }
 
 pub fn responsible_pid(_pid: u32) -> Option<u32> {

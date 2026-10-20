@@ -22,7 +22,7 @@ fn has_word(s: &str, word: &str) -> bool {
 
 const RUNTIMES: &[&str] = &[
     "node", "bun", "deno", "python", "python3", "pythonw", "ruby", "php", "java", "dotnet", "go",
-    "uv", "uvx", "npx", "bunx", "pnpx", "dart",
+    "uv", "uvx", "npx", "bunx", "pnpx", "dart", "py",
 ];
 
 pub fn is_runtime(name: &str) -> bool {
@@ -481,8 +481,11 @@ pub fn is_dev_build(exe: &str) -> bool {
     if installed.iter().any(|p| e.starts_with(p) || e.contains(".app/")) {
         return false;
     }
+    // `go run` builds into a temp folder like ".../go-build3412345/b001/exe/".
+    if e.contains("/go-build") && e.contains("/exe/") {
+        return true;
+    }
     let build_dirs = [
-        "/go-build/",
         "/target/debug/",
         "/target/release/",
         "/.build/debug/",
@@ -579,11 +582,14 @@ pub fn is_os_critical(p: &ProcInfo) -> bool {
         return true;
     }
     let exe = p.exe.as_deref().unwrap_or("");
+    // Shells and language launchers that live in the system folder are glue
+    // for your own work (`cmd /c npm run dev`, `py -m uvicorn`), not the OS.
+    let glue = is_shell(p) || is_runtime(&p.name);
     exe.starts_with("/System/")
         || exe.starts_with("/usr/libexec/")
         || exe.starts_with("/usr/sbin/")
         || exe.starts_with("/sbin/")
-        || exe.to_ascii_lowercase().starts_with("c:\\windows\\")
+        || (!glue && exe.to_ascii_lowercase().starts_with("c:\\windows\\"))
 }
 
 #[cfg(test)]
