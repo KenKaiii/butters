@@ -59,7 +59,7 @@ Butters lives in your menu bar and keeps a busy dev machine running smooth. A da
 
    **macOS:** [Download the latest release](https://github.com/KenKaiii/butters/releases/latest), open the `.dmg` and drag Butters into Applications. Apple Silicon and Intel builds, signed and notarized.
 
-   **Windows:** [Download the latest release](https://github.com/KenKaiii/butters/releases/latest) and run the `-setup.exe`.
+   **Windows (beta):** [Download the latest release](https://github.com/KenKaiii/butters/releases/latest) and run the `-setup.exe`. It builds and passes its tests on Windows, but hasn't had much real-world use yet, and the installer isn't code-signed, so Windows will show a "protected your PC" warning first (click **More info**, then **Run anyway**). Bug reports very welcome.
 
 2. Click the butter pat in your menu bar (or press ⌥⌘B), tick what you want gone, and hit **Close**.
 
@@ -67,7 +67,7 @@ The only permission it asks for is notifications, for alerts. One click turns th
 
 ## Try it safely
 
-`Butters Playground` is a separate test app that starts seven throwaway processes (dev servers, an agent session, an MCP server, a busy build and a leaking process) and can only see those. Close them as often as you like, then hit **Reset**. Your real apps are invisible to it.
+Want to see Butters close things without touching your own work? Build **Butters Playground** from source (`pnpm playground`, see below). It's a separate test app that starts seven throwaway processes (dev servers, an agent session, an MCP server, a busy build and a leaking process) and can only see those. Close them as often as you like, then hit **Reset**. Your real apps are invisible to it. It isn't part of the download.
 
 ## Build it yourself
 
