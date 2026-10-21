@@ -1,6 +1,6 @@
 [package]
 name = "butters"
-version = "0.1.12"
+version = "0.1.13"
 description = "Keeps a busy dev machine running smooth by suggesting what to close."
 authors = ["Butters"]
 edition = "2024"
