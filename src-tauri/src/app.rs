@@ -20,6 +20,7 @@ use crate::sampler::{self, Sampler, Stats};
 use crate::services;
 use crate::docker_activity::Activity;
 use crate::history::{self, History, Summary};
+use crate::log::Log;
 use crate::trends::{Culprit, Trends};
 use crate::settings::Settings;
 
@@ -80,6 +81,16 @@ impl Target {
             Target::Procs { key, .. } | Target::Container { key, .. } | Target::Model { key, .. } | Target::DockerDisk { key, .. } => key,
         }
     }
+
+    /// What the log calls it (the same name the panel showed).
+    fn label(&self) -> String {
+        match self {
+            Target::Procs { target, .. } => target.title.clone(),
+            Target::Container { name, .. } => format!("Container: {name}"),
+            Target::Model { name, .. } => format!("Ollama model: {name}"),
+            Target::DockerDisk { key, .. } => key.clone(),
+        }
+    }
 }
 
 pub struct AppState {
@@ -105,18 +116,25 @@ pub struct AppState {
     pub alerts: Mutex<AlertState>,
     pub panel_open: AtomicBool,
     seq: AtomicU64,
+    pub log: Log,
+    /// What the log last said each list held (key -> title), so it only
+    /// notes what appeared or went away, not every refresh.
+    logged_procs: Mutex<HashMap<String, String>>,
+    logged_services: Mutex<HashMap<String, String>>,
 }
 
 impl AppState {
-    pub fn new(settings_path: PathBuf) -> Self {
+    pub fn new(settings_path: PathBuf, log: Log) -> Self {
         let dir = settings_path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
         let history_path = History::path(&dir);
         let docker_activity_path = Activity::path(&dir);
+        let settings = Settings::load(&settings_path);
+        log.info(format!("Settings: {}", settings_line(&settings)));
         AppState {
             sampler: Mutex::new(Sampler::new()),
             front: Mutex::new(FrontTracker::new()),
             targets: Mutex::new(HashMap::new()),
-            settings: Mutex::new(Settings::load(&settings_path)),
+            settings: Mutex::new(settings),
             history: Mutex::new(History::load(&history_path)),
             history_path,
             settings_path,
@@ -132,7 +150,66 @@ impl AppState {
             alerts: Mutex::new(AlertState::default()),
             panel_open: AtomicBool::new(false),
             seq: AtomicU64::new(1),
+            log,
+            logged_procs: Mutex::new(HashMap::new()),
+            logged_services: Mutex::new(HashMap::new()),
         }
+    }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
+}
+
+fn settings_line(s: &Settings) -> String {
+    let shortcut = if s.shortcut.is_empty() { "off" } else { s.shortcut.as_str() };
+    format!(
+        "alerts {}, sounds {}, launch at login {}, shortcut {shortcut}, {} ignored",
+        on_off(s.alerts),
+        on_off(s.sounds),
+        on_off(s.launch_at_login),
+        s.ignored.len()
+    )
+}
+
+fn kind_name(kind: Kind) -> String {
+    serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+}
+
+/// Logs what's new in a list since the last time it was logged, and what
+/// went away. Unchanged items stay silent.
+fn log_list_changes(log: &Log, logged: &Mutex<HashMap<String, String>>, suggestions: &[Suggestion]) {
+    let mut logged = lock(logged);
+    let now: HashMap<String, String> = suggestions.iter().map(|s| (s.key.clone(), s.title.clone())).collect();
+    let mut gone: Vec<&String> = logged.iter().filter(|(k, _)| !now.contains_key(*k)).map(|(_, t)| t).collect();
+    gone.sort();
+    for title in gone {
+        log.info(format!("No longer suggesting \"{title}\""));
+    }
+    for s in suggestions.iter().filter(|s| !logged.contains_key(&s.key)) {
+        let size = if s.disk > 0 { format!("{} disk", fmt_bytes(s.disk)) } else { fmt_bytes(s.memory) };
+        log.info(format!(
+            "Suggesting \"{}\" ({}): {}, {size}, CPU {:.0}%{}{}",
+            s.title,
+            kind_name(s.kind),
+            s.reason,
+            s.cpu,
+            if s.recommended { ", pre-ticked" } else { "" },
+            s.note.as_deref().map(|n| format!(", note: {n}")).unwrap_or_default(),
+        ));
+    }
+    *logged = now;
+}
+
+/// How a close went, for the log.
+fn outcome_entry(outcome: &Outcome) -> (crate::log::Level, &'static str, &str) {
+    use crate::log::Level as L;
+    match outcome {
+        Outcome::Closed { message, .. } => (L::Info, "Closed", message),
+        Outcome::StillRunning { message } => (L::Warn, "Still running after asking", message),
+        Outcome::NeedsForce { message } => (L::Warn, "Needs force close", message),
+        Outcome::Refused { message } => (L::Warn, "Refused to close", message),
+        Outcome::Failed { message } => (L::Error, "Failed to close", message),
     }
 }
 
@@ -331,6 +408,7 @@ fn do_scan(state: &AppState) -> ScanResult {
         sw.retain(|id| !id.starts_with('p'));
         sw.extend(suggestions.iter().filter(|s| sweepable(s)).map(|s| s.id.clone()));
     }
+    log_list_changes(&state.log, &state.logged_procs, &suggestions);
     // Keep the latest service targets; replace process ones.
     {
         let mut t = lock(&state.targets);
@@ -604,12 +682,21 @@ fn do_scan_services(state: &AppState) -> ServicesResult {
         sw.retain(|id| id.starts_with('p'));
         sw.extend(suggestions.iter().filter(|s| sweepable(s)).map(|s| s.id.clone()));
     }
+    log_list_changes(&state.log, &state.logged_services, &suggestions);
     let result = ServicesResult {
         suggestions,
         docker: if containers.is_some() { "running" } else { "off" },
         ollama: if models.is_some() { "running" } else { "off" },
     };
-    *lock(&state.services_cache) = Some(result.clone());
+    let previous = lock(&state.services_cache).replace(result.clone());
+    for (name, was, now) in [
+        ("Docker", previous.as_ref().map(|p| p.docker), result.docker),
+        ("Ollama", previous.as_ref().map(|p| p.ollama), result.ollama),
+    ] {
+        if was != Some(now) {
+            state.log.info(format!("{name} is {now}"));
+        }
+    }
     result
 }
 
@@ -684,8 +771,11 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let Some(target) = lock(&state.targets).get(&id).cloned() else {
+            state.log.warn("Close asked for an item from an old list; told the panel to refresh");
             return Outcome::Refused { message: "List changed. Refresh.".into() };
         };
+        let label = target.label();
+        state.log.info(format!("Closing \"{label}\"{}", if force { " (force)" } else { "" }));
         let outcome = match &target {
             Target::Procs { target, .. } => {
                 let frontmost = lock(&state.front).last_front;
@@ -711,6 +801,8 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
                 }
             }
         };
+        let (level, what, message) = outcome_entry(&outcome);
+        state.log.write(level, &format!("{what} \"{label}\": {message}"));
         if let Outcome::Closed { freed, disk, .. } = &outcome {
             lock(&state.targets).remove(&id);
             if let Target::DockerDisk { .. } = &target {
@@ -724,7 +816,7 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
                 Target::Container { .. } => Kind::DockerContainer,
                 Target::Model { .. } | Target::DockerDisk { .. } => Kind::OllamaModel,
             };
-            let kind = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            let kind = kind_name(kind);
             let mut h = lock(&state.history);
             h.record_freed(history::today(), *freed, &kind);
             let _ = h.save(&state.history_path);
@@ -737,7 +829,8 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
 
 #[tauri::command]
 pub fn ignore_item(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let key = lock(&state.targets).get(&id).map(|t| t.key().to_string()).ok_or("List changed. Refresh.")?;
+    let (key, label) = lock(&state.targets).get(&id).map(|t| (t.key().to_string(), t.label())).ok_or("List changed. Refresh.")?;
+    state.log.info(format!("Ignoring \"{label}\" from now on"));
     let mut s = lock(&state.settings);
     if !s.ignored.contains(&key) {
         s.ignored.push(key);
@@ -760,10 +853,11 @@ pub fn apply_shortcut(app: &AppHandle, old: &str) {
     if !old.is_empty() {
         let _ = gs.unregister(old);
     }
-    let new = lock(&app.state::<AppState>().settings).shortcut.clone();
+    let state = app.state::<AppState>();
+    let new = lock(&state.settings).shortcut.clone();
     if !new.is_empty()
         && let Err(e) = gs.register(new.as_str()) {
-            eprintln!("shortcut {new} unavailable: {e}");
+            state.log.warn(format!("Shortcut {new} unavailable: {e}"));
         }
 }
 
@@ -775,12 +869,21 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settin
     let currently = auto.is_enabled().unwrap_or(false);
     if new.launch_at_login != currently {
         let r = if new.launch_at_login { auto.enable() } else { auto.disable() };
-        r.map_err(|e| format!("Couldn't change login item: {e}"))?;
+        r.map_err(|e| {
+            state.log.error(format!("Couldn't change login item: {e}"));
+            format!("Couldn't change login item: {e}")
+        })?;
     }
     let (saved, old_shortcut) = {
         let mut s = lock(&state.settings);
         let old = std::mem::replace(&mut *s, new);
-        s.save(&state.settings_path).map_err(|e| format!("Couldn't save settings: {e}"))?;
+        if *s != old {
+            state.log.info(format!("Settings changed: {}", settings_line(&s)));
+        }
+        s.save(&state.settings_path).map_err(|e| {
+            state.log.error(format!("Couldn't save settings: {e}"));
+            format!("Couldn't save settings: {e}")
+        })?;
         (s.clone(), old.shortcut)
     };
     if saved.shortcut != old_shortcut {
@@ -821,6 +924,7 @@ pub fn hide_panel(app: AppHandle) {
 #[tauri::command]
 pub fn quit_butters(app: AppHandle) {
     let state = app.state::<AppState>();
+    state.log.info("Quit from the panel");
     let _ = lock(&state.history).save(&state.history_path);
     app.exit(0);
 }
@@ -833,6 +937,7 @@ pub fn spawn_background(app: AppHandle) {
         .name("butters-watch".into())
         .spawn(move || {
             let mut tick: u64 = 0;
+            let mut last_level: Option<Level> = None;
             lock(&app.state::<AppState>().sampler).sample();
             // Debug builds only: fire one real alert through the normal path,
             // so tests can see what a notification looks like.
@@ -864,13 +969,16 @@ pub fn spawn_background(app: AppHandle) {
                     seen.retain(|k| leaks.iter().any(|l| (l.pid, l.start) == *k));
                     leaks.into_iter().filter(|l| seen.insert((l.pid, l.start))).collect::<Vec<_>>()
                 };
-                if let Some(l) = new_leaks.first()
-                    && lock(&state.settings).alerts && !panel_open {
-                        crate::permissions::notify(
-                            &app,
-                            &format!("{} grew {} in {}", l.label, fmt_bytes(l.growth.bytes), fmt_duration(l.growth.secs.max(60))),
-                        );
+                let alerts_on = lock(&state.settings).alerts;
+                for (i, l) in new_leaks.iter().enumerate() {
+                    let msg = format!("{} grew {} in {}", l.label, fmt_bytes(l.growth.bytes), fmt_duration(l.growth.secs.max(60)));
+                    // One notification per minute at most; the rest are only logged.
+                    let show = i == 0 && alerts_on && !panel_open;
+                    state.log.warn(format!("Leak: {msg}{}", alert_suffix(show, alerts_on, panel_open)));
+                    if show {
+                        crate::permissions::notify(&app, &msg);
                     }
+                }
                 // Docker activity every 10 minutes, even with the panel closed,
                 // so "no activity for 6 days" is measured, not guessed.
                 // Docker + Ollama every 10 minutes (and once right after start),
@@ -880,6 +988,11 @@ pub fn spawn_background(app: AppHandle) {
                     let _ = do_scan_services(&state);
                 }
                 let level = alerts::level(&stats);
+                if last_level != Some(level) {
+                    let name = level_name(level);
+                    state.log.info(format!("Machine is {name}: {}, pressure {:?}, thermal {:?}", summary_line(&stats), stats.pressure, stats.thermal));
+                    last_level = Some(level);
+                }
                 crate::panel::set_tray_level(&app, level, &stats);
                 {
                     let mut h = lock(&state.history);
@@ -890,13 +1003,37 @@ pub fn spawn_background(app: AppHandle) {
                     }
                 }
                 let alert = lock(&state.alerts).check(&stats, Instant::now());
-                if let Some((_, msg)) = alert
-                    && lock(&state.settings).alerts && !panel_open {
+                if let Some((_, msg)) = alert {
+                    let show = alerts_on && !panel_open;
+                    state.log.warn(format!("Alert: {msg}{}", alert_suffix(show, alerts_on, panel_open)));
+                    if show {
                         crate::permissions::notify(&app, msg);
                     }
+                }
             }
         })
         .expect("spawn background thread");
+}
+
+fn level_name(level: Level) -> &'static str {
+    match level {
+        Level::Smooth => "smooth",
+        Level::Busy => "busy",
+        Level::Strained => "strained",
+    }
+}
+
+/// Why an alert was or wasn't shown, for the log.
+fn alert_suffix(shown: bool, alerts_on: bool, panel_open: bool) -> &'static str {
+    if shown {
+        " (notified)"
+    } else if !alerts_on {
+        " (not notified: alerts are off)"
+    } else if panel_open {
+        " (not notified: panel was open)"
+    } else {
+        " (not notified)"
+    }
 }
 
 pub fn summary_line(stats: &Stats) -> String {

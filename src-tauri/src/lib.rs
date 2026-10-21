@@ -4,6 +4,7 @@ pub mod app;
 pub mod docker_activity;
 pub mod engine;
 pub mod history;
+pub mod log;
 pub mod panel;
 pub mod permissions;
 pub mod platform;
@@ -46,8 +47,17 @@ pub fn run() {
             // Menu bar app: no Dock icon, no app switcher entry.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            let log = app.path().app_log_dir().map(|d| log::Log::open(&d)).unwrap_or_else(|_| log::Log::disabled());
+            log_panics(&log);
+            log.info(format!(
+                "Butters {} started ({} {}, pid {})",
+                app.package_info().version,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                std::process::id()
+            ));
             let config_dir = app.path().app_config_dir()?;
-            app.manage(app::AppState::new(settings::Settings::path(&config_dir)));
+            app.manage(app::AppState::new(settings::Settings::path(&config_dir), log));
             panel::setup_tray(app.handle())?;
             permissions::setup(app.handle());
             // The Playground leaves the global shortcut to the real Butters.
@@ -93,12 +103,35 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Butters")
-        .run(|_app, event| match event {
+        .run(|app, event| match event {
             // Closing the panel must not quit the app; only "Quit Butters" does.
             tauri::RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
-            // The Playground cleans up every test process it started.
-            #[cfg(feature = "playground")]
-            tauri::RunEvent::Exit => playground_state().stop_all(),
+            tauri::RunEvent::Exit => {
+                if let Some(state) = app.try_state::<app::AppState>() {
+                    state.log.info("Butters exited");
+                }
+                // The Playground cleans up every test process it started.
+                #[cfg(feature = "playground")]
+                playground_state().stop_all();
+            }
             _ => {}
         });
+}
+
+/// Writes a crash's message and location to the log before the default
+/// handler runs (release builds abort right after).
+fn log_panics(log: &log::Log) {
+    let log = log.clone();
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let at = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown".into());
+        log.error(format!("Crashed: {msg}{at}"));
+        default(info);
+    }));
 }

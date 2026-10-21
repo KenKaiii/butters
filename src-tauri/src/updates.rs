@@ -49,14 +49,22 @@ async fn check(app: &AppHandle) -> Status {
         Ok(u) => u.check().await.map_err(short),
         Err(e) => Err(short(e)),
     };
+    let log = &app.state::<crate::app::AppState>().log;
     let mut status = Status { current, ..Default::default() };
     match result {
         Ok(Some(update)) => {
+            log.info(format!("Update check: {} available (running {})", update.version, status.current));
             status.available = Some(update.version.clone());
             *lock(&state.pending) = Some(update);
         }
-        Ok(None) => *lock(&state.pending) = None,
-        Err(e) => status.error = Some(e),
+        Ok(None) => {
+            log.info(format!("Update check: {} is the latest", status.current));
+            *lock(&state.pending) = None;
+        }
+        Err(e) => {
+            log.warn(format!("Update check failed: {e}"));
+            status.error = Some(e);
+        }
     }
     *lock(&state.status) = status.clone();
     status
@@ -84,10 +92,16 @@ pub async fn check_update(app: AppHandle) -> Status {
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     let state = app.state::<UpdateState>();
     let update = lock(&state.pending).take().ok_or("No update ready. Check again.")?;
+    let log = app.state::<crate::app::AppState>().log.clone();
+    log.info(format!("Installing update {}", update.version));
     lock(&state.status).installing = true;
     match update.download_and_install(|_, _| {}, || {}).await {
-        Ok(()) => app.restart(),
+        Ok(()) => {
+            log.info("Update installed, restarting");
+            app.restart()
+        }
         Err(e) => {
+            log.error(format!("Update failed: {}", short(&e)));
             let mut s = lock(&state.status);
             s.installing = false;
             s.error = Some(short(e));

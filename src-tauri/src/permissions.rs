@@ -68,7 +68,7 @@ mod imp {
         UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse, UNNotificationSettings,
         UNNotificationSound, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
-    use tauri::AppHandle;
+    use tauri::{AppHandle, Manager};
 
     use super::Notify;
 
@@ -127,16 +127,18 @@ mod imp {
 
     /// Posts through UNUserNotificationCenter (the current API). If Butters
     /// hasn't asked yet, the system prompt appears first, once.
-    pub fn notify(_app: &AppHandle, body: &str) {
+    pub fn notify(app: &AppHandle, body: &str) {
         if !bundled() {
             return;
         }
+        let log = app.state::<crate::app::AppState>().log.clone();
         let allowed = match state() {
             Notify::On => true,
             Notify::Ask => request() == Notify::On,
             Notify::Off => false,
         };
         if !allowed {
+            log.warn(format!("Notification not shown (turned off in System Settings): {body}"));
             return;
         }
         let content = UNMutableNotificationContent::new();
@@ -146,10 +148,10 @@ mod imp {
         content.setThreadIdentifier(&NSString::from_str("butters"));
         let id = NSUUID::new().UUIDString();
         let request = UNNotificationRequest::requestWithIdentifier_content_trigger(&id, &content, None);
-        let done = RcBlock::new(|err: *mut NSError| {
+        let done = RcBlock::new(move |err: *mut NSError| {
             if !err.is_null() {
                 // SAFETY: non-null NSError passed by the system for this callback.
-                eprintln!("notification failed: {}", unsafe { &*err }.localizedDescription());
+                log.error(format!("Notification failed: {}", unsafe { &*err }.localizedDescription()));
             }
         });
         UNUserNotificationCenter::currentNotificationCenter().addNotificationRequest_withCompletionHandler(&request, Some(&done));
