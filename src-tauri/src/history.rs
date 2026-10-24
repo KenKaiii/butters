@@ -52,8 +52,12 @@ pub struct Lifetime {
     /// Closed count per kind ("dev_server", "agent_session", ...).
     pub by_kind: BTreeMap<String, u32>,
     pub best_day: u64,
-    /// Disk given back (Docker build cache, untagged images).
+    /// Disk given back (Docker clean-ups, Deep clean), as measured: what
+    /// deleting it really frees.
     pub disk_freed: u64,
+    /// The part of `disk_freed` that went to the Trash: it only comes back
+    /// once the Trash is emptied.
+    pub disk_trashed: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -131,13 +135,17 @@ impl History {
         }
     }
 
-    pub fn record_disk(&mut self, bytes: u64) {
+    /// Disk cleaned up; `trashed` when it went to the Trash.
+    pub fn record_disk(&mut self, bytes: u64, kind: &str, trashed: bool) {
         let lt = &mut self.lifetime;
         if lt.since == 0 {
             lt.since = now_secs();
         }
         lt.disk_freed = lt.disk_freed.saturating_add(bytes);
-        *lt.by_kind.entry("docker_disk".to_string()).or_default() += 1;
+        if trashed {
+            lt.disk_trashed = lt.disk_trashed.saturating_add(bytes);
+        }
+        *lt.by_kind.entry(kind.to_string()).or_default() += 1;
         lt.closed += 1;
     }
 
@@ -250,6 +258,20 @@ mod tests {
         assert_eq!(h.lifetime.by_kind["agent_session"], 20);
         assert_eq!(h.lifetime.by_kind["mcp_server"], 1);
         assert_eq!(h.summary(40).lifetime, h.lifetime);
+    }
+
+    #[test]
+    fn disk_is_kept_apart_from_memory_and_trash_from_deleted() {
+        let mut h = History::default();
+        h.record_disk(8_000, "deep_clean", false);
+        h.record_disk(3_000, "deep_clean", true);
+        h.record_disk(1_000, "docker_disk", false);
+        let lt = &h.lifetime;
+        assert_eq!((lt.disk_freed, lt.disk_trashed, lt.freed, lt.best_day), (12_000, 3_000, 0, 0));
+        assert_eq!((lt.closed, lt.by_kind["deep_clean"], lt.by_kind["docker_disk"]), (3, 2, 1));
+        // Files written before disk_trashed existed still load.
+        let old: Lifetime = serde_json::from_str(r#"{"since":5,"freed":0,"closed":1,"by_kind":{},"best_day":0,"disk_freed":9}"#).unwrap();
+        assert_eq!((old.disk_freed, old.disk_trashed), (9, 0));
     }
 
     #[test]

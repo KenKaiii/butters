@@ -568,7 +568,7 @@ fn suggest(g: &Group, ctx: &Context, by_root: &HashMap<u32, &Group>) -> Verdict 
                 return s(quiet_for(g), false);
             }
         }
-        Kind::DockerContainer | Kind::DockerDisk | Kind::OllamaModel => {}
+        Kind::DockerContainer | Kind::DockerDisk | Kind::OllamaModel | Kind::DeepClean => {}
     }
 
     if busy {

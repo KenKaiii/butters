@@ -23,6 +23,12 @@
     chevron: ["m9 18 6-6-6-6"],
     check: ["M20 6 9 17l-5-5"],
     chart: ["M3 3v16a2 2 0 0 0 2 2h16", "M18 17V9", "M13 17V5", "M8 17v-3"],
+    hardDrive: [
+      line(22, 12, 2, 12),
+      "M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z",
+      line(6, 16, 6.01, 16),
+      line(10, 16, 10.01, 16),
+    ],
   } as const;
   export type IconName = keyof typeof ICONS;
 </script>

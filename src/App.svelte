@@ -13,6 +13,7 @@
   import ButterGauges from "./lib/ButterGauges.svelte";
   import Toast from "./lib/Toast.svelte";
   import StatsView from "./lib/StatsView.svelte";
+  import DeepClean from "./lib/DeepClean.svelte";
   import { dropFrom } from "./lib/drops";
   import { tip } from "./lib/tip";
 
@@ -20,7 +21,8 @@
   let services = $state<ServicesResult | null>(null);
   let error = $state<string | null>(null);
   let refreshing = $state(false);
-  let view = $state<"main" | "settings" | "stats">("main");
+  let view = $state<"main" | "settings" | "stats" | "deep">("main");
+  let deepDays = $state(90);
   let settings = $state<Settings | null>(null);
   let settingsError = $state<string | null>(null);
   let showProtected = $state(false);
@@ -37,7 +39,7 @@
   let melting = $state<Record<string, boolean>>({});
   let gone = $state<Record<string, boolean>>({});
   // The big "you saved" moment after closing things.
-  let savings = $state<{ freed: number; closed: number; cpu: number; ports: number } | null>(null);
+  let savings = $state<{ freed: number; closed: number; cpu: number; ports: number; disk?: boolean; trashed?: number; total?: number } | null>(null);
   let update = $state<UpdateStatus | null>(null);
   // A protected app the user chose to close: first click arms, second confirms.
   let armedKey = $state<string | null>(null);
@@ -321,6 +323,11 @@
     await refresh();
   }
 
+  function openDeep() {
+    view = "deep";
+    api.getSettings().then((s) => (deepDays = s.deep_clean_days)).catch(() => {});
+  }
+
   function openStats(tab: "life" | "fan" = "life") {
     statsTab = tab;
     view = "stats";
@@ -471,7 +478,9 @@
         : 0,
   );
   const isMac = /Mac/.test(navigator.platform) || /Macintosh/.test(navigator.userAgent);
+  const isWindows = /Win/.test(navigator.platform) || /Windows/.test(navigator.userAgent);
   const SHORTCUTS = ["Alt+Super+B", "Control+Alt+B", "Alt+Super+Space", ""];
+  const DEEP_DAYS = [30, 90, 180];
   function shortcutLabel(k: string) {
     if (!k) return "Off";
     const mac: Record<string, string> = { Alt: "⌥", Super: "⌘", Control: "⌃", Shift: "⇧", Space: "Space" };
@@ -497,6 +506,9 @@
         <div class="tools">
           <button class="ghost" type="button" aria-label="Refresh" use:tip={"Refresh"} onclick={refresh} disabled={refreshing || running}>
             <span class="spin" class:spinning={refreshing}><Icon name="refresh" /></span>
+          </button>
+          <button class="ghost" type="button" aria-label="Deep clean" use:tip={{ text: "Deep clean", lines: ["Old caches, build folders and simulators"] }} onclick={openDeep}>
+            <Icon name="hardDrive" />
           </button>
           <button class="ghost" type="button" aria-label="Stats" use:tip={"Stats"} onclick={() => openStats()}>
             <Icon name="chart" />
@@ -673,7 +685,20 @@
       </footer>
     </section>
   {:else if view === "stats"}
-    <StatsView {smooth} tab={statsTab} onBack={() => (view = "main")} />
+    <StatsView {smooth} tab={statsTab} bin={isWindows ? "Recycle Bin" : "Trash"} onBack={() => (view = "main")} />
+  {:else if view === "deep"}
+    <DeepClean
+      days={deepDays}
+      bin={isWindows ? "Recycle Bin" : "Trash"}
+      onBack={() => (view = "main")}
+      onSay={say}
+      onCleaned={({ cleared, trashed, count }) => {
+        // Disk cleared since install, counting this clean exactly once.
+        const total = (smooth?.lifetime.disk_freed ?? 0) + cleared + trashed;
+        savings = { freed: cleared + trashed, closed: count, cpu: 0, ports: 0, disk: true, trashed, total };
+        void loadSmoothness();
+      }}
+    />
   {:else}
     <section class="view" aria-label="Settings" in:dissolve={{ duration: 220, blur: 3 }} out:dissolve={{ duration: 160, blur: 3 }}>
       <header class="head">
@@ -718,6 +743,17 @@
             </label>
             <Check id="set-login" variant="switch" checked={s.launch_at_login} onchange={(on) => saveSettings({ ...s, launch_at_login: on })} />
           </div>
+          <div class="setting" in:pour={{ delay: 130 }}>
+            <label class="setting-text" for="set-deep">
+              <strong>Deep clean</strong>
+              <span class="muted">Tick things unused for</span>
+            </label>
+            <select id="set-deep" class="select" value={s.deep_clean_days} onchange={(e) => saveSettings({ ...s, deep_clean_days: Number(e.currentTarget.value) })}>
+              {#each DEEP_DAYS as d (d)}
+                <option value={d}>{d === 30 ? "1 month" : `${d / 30} months`}</option>
+              {/each}
+            </select>
+          </div>
           <div class="setting" in:pour={{ delay: 160 }}>
             <span class="setting-text">
               <strong>Ignored</strong>
@@ -755,7 +791,12 @@
   {/if}
 
   {#if savings}
-    <Savings {...savings} total={(smooth?.lifetime.freed ?? 0) + savings.freed} onDone={() => (savings = null)} />
+    <Savings
+      {...savings}
+      total={savings.total ?? (smooth?.lifetime.freed ?? 0) + savings.freed}
+      bin={isWindows ? "Recycle Bin" : "Trash"}
+      onDone={() => (savings = null)}
+    />
   {/if}
 
   <div class="toast-slot" role="status" aria-live="polite">

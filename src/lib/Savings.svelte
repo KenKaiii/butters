@@ -1,6 +1,8 @@
 <script lang="ts">
   // The "you saved" moment: big numbers, centred over the panel, counting
   // up like butter softening. Dismisses itself, or on click / Escape.
+  // Deep clean uses it for disk: the same moment, plus a word about the
+  // Trash when some of the space only comes back once it's emptied.
   import { onMount } from "svelte";
   import { Tween } from "svelte/motion";
   import { bytes } from "./format";
@@ -13,7 +15,23 @@
     ports,
     onDone,
     total = 0,
-  }: { freed: number; closed: number; cpu: number; ports: number; total?: number; onDone: () => void } = $props();
+    disk = false,
+    trashed = 0,
+    bin = "Trash",
+  }: {
+    freed: number;
+    closed: number;
+    cpu: number;
+    ports: number;
+    total?: number;
+    onDone: () => void;
+    /** Disk space (Deep clean) rather than memory. */
+    disk?: boolean;
+    /** Of `freed`, how much went to the Trash (comes back once emptied). */
+    trashed?: number;
+    /** "Trash" or "Recycle Bin". */
+    bin?: string;
+  } = $props();
 
   const amount = new Tween(0, { easing: butterEase });
   const GB = 1024 ** 3;
@@ -21,13 +39,14 @@
 
   onMount(() => {
     amount.set(freed, { duration: ms(1100), delay: ms(180) });
-    const t = setTimeout(onDone, ms(3200) || 2600);
+    // A little longer when there's a Trash note to read.
+    const t = setTimeout(onDone, (ms(3200) || 2600) + (trashed ? 1200 : 0));
     return () => clearTimeout(t);
   });
 
   const stats = $derived(
     [
-      { n: `${closed}`, label: "closed" },
+      { n: `${closed}`, label: disk ? "cleaned" : "closed" },
       cpu >= 1 ? { n: `${Math.round(cpu)}%`, label: "CPU back" } : null,
       ports > 0 ? { n: `${ports}`, label: ports === 1 ? "port free" : "ports free" } : null,
     ].filter((x): x is { n: string; label: string } => !!x),
@@ -37,8 +56,8 @@
 <button class="scrim" type="button" aria-label="Dismiss" onclick={onDone} in:pour={{ y: 0, blur: 0, duration: 300 }} out:melt={{ duration: 520, y: 0, blur: 4 }}>
   <div class="osd" role="status" aria-live="polite" in:plop out:melt={{ duration: 640 }}>
     <span class="puddle" aria-hidden="true"></span>
-    <p class="label">Freed</p>
-    <p class="big" aria-label={`${bytes(freed)} freed`}>
+    <p class="label">{disk ? "Cleaned up" : "Freed"}</p>
+    <p class="big" aria-label={`${bytes(freed)} ${disk ? "cleaned up" : "freed"}`}>
       <span class="num">{big[0]}</span><span class="unit">{big[1]}</span>
     </p>
     <div class="stats">
@@ -46,7 +65,9 @@
         <span class="stat" in:pour={{ delay: 380 + i * 90, y: 6 }}><strong>{st.n}</strong> {st.label}</span>
       {/each}
     </div>
-    {#if total > freed}
+    {#if trashed > 0}
+      <p class="cheer" in:pour={{ delay: 640, y: 6 }}>Empty the {bin} to free {bytes(trashed)}</p>
+    {:else if total > freed}
       <p class="cheer" in:pour={{ delay: 640, y: 6 }}>{bytes(total)} since install</p>
     {:else if freed >= GB}
       <p class="cheer" in:pour={{ delay: 640, y: 6 }}>Smooth as butter</p>

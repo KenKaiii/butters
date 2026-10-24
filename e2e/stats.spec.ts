@@ -13,7 +13,7 @@ test("stats screen shows lifetime totals from the header button", async ({ page 
   await page.getByRole("button", { name: "Stats" }).click();
   const view = page.getByRole("region", { name: "Stats" });
   await expect(view.getByRole("heading", { name: "Butters so far" })).toBeVisible();
-  await expect(view.getByLabel("41.2 GB freed in total")).toBeVisible();
+  await expect(view.getByLabel("41.2 GB memory freed")).toBeVisible();
   await expect(view.locator(".num")).toHaveText("41.2", { timeout: 4000 }); // counts up, then lands
   await expect(view).toContainText("Since");
   await expect(view).toContainText("12 days");
@@ -97,4 +97,26 @@ test("stats opens in place: no drop-in from below, no re-count when switching ta
   await page.getByRole("tab", { name: "So far" }).click();
   await page.waitForTimeout(40);
   expect(Number(await num.textContent())).toBeGreaterThan(40);
+});
+
+test("only disk cleaned: the big number is disk, nothing shows as \"1 MB\"", async ({ page }) => {
+  const GB = 1024 ** 3;
+  await open(page, {
+    smoothness: {
+      score: 90, freedToday: 0, freedWeek: 0, week: [0, 0, 0, 0, 0, 0, 0],
+      lifetime: { since: Math.floor(Date.now() / 1000) - 60, freed: 0, closed: 51, by_kind: { deep_clean: 51 }, best_day: 0, disk_freed: 102.5 * GB, disk_trashed: 58.7 * GB },
+    },
+  });
+  await page.getByRole("button", { name: "Stats" }).click();
+  const view = page.getByRole("region", { name: "Stats" });
+  await expect(view.getByLabel("102.5 GB disk cleaned up")).toBeVisible();
+  await expect(view).toContainText("Since");
+  await expect(view).toContainText("today");
+  await expect(view).toContainText(/58\.7 GB of it went to the (Trash|Recycle Bin), freed once it's emptied/);
+  await expect(view.locator(".cell", { hasText: "Cleaned" })).toContainText("51");
+  await expect(view.locator(".cell", { hasText: "Closed" })).toContainText("0");
+  await expect(view.locator(".cell", { hasText: "Memory this week" })).toContainText("–");
+  await expect(view).not.toContainText("1 MB");
+  await expect(view.getByRole("heading", { name: "What it closed and cleaned" })).toBeVisible();
+  await expect(view.locator(".k-label")).toHaveText(["Deep cleans"]);
 });

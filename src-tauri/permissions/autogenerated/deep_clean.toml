@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-deep-clean"
+description = "Enables the deep_clean command without any pre-configured scope."
+commands.allow = ["deep_clean"]
+
+[[permission]]
+identifier = "deny-deep-clean"
+description = "Denies the deep_clean command without any pre-configured scope."
+commands.deny = ["deep_clean"]

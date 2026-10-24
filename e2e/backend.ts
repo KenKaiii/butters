@@ -6,7 +6,7 @@
 export interface FakeState {
   calls: { cmd: string; args: unknown }[];
   sounds: string[];
-  settings: { alerts: boolean; launch_at_login: boolean; sounds: boolean; shortcut: string; ignored: string[] };
+  settings: { alerts: boolean; launch_at_login: boolean; sounds: boolean; shortcut: string; ignored: string[]; deep_clean_days: number };
   services: unknown[];
   sweep: string[];
   /** Simulated time Docker takes to answer a fresh check (ms). */
@@ -25,7 +25,13 @@ export interface FakeState {
   };
   level: "smooth" | "busy" | "strained";
   /** Outcome per suggestion id for close_item (default: closed). */
-  closeAs: Record<string, "closed" | "still_running" | "needs_force">;
+  closeAs: Record<string, "closed" | "still_running" | "needs_force" | "refused">;
+  /** Deep clean rows the finished look returns. */
+  deep: unknown[];
+  /** How many deep_clean calls report "still looking" first. */
+  deepPolls: number;
+  /** Deep clean polls per cleaned item while a clean runs "in the background". */
+  deepStep: number;
 }
 
 /** Runs in the page (serialised by Playwright's addInitScript). */
@@ -35,7 +41,14 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
   const state = {
     calls: [] as { cmd: string; args: unknown }[],
     sounds: [] as string[],
-    settings: { alerts: true, launch_at_login: false, sounds: true, shortcut: "Alt+Super+B", ignored: [] as string[] },
+    settings: { alerts: true, launch_at_login: false, sounds: true, shortcut: "Alt+Super+B", ignored: [] as string[], deep_clean_days: 90 },
+    deep: [] as any[],
+    deepPolls: 1,
+    deepStep: 1,
+    deepScannedAt: null as number | null,
+    deepCleaning: null as null | { ids: string[]; keys: string[]; done: number; current: string | null; cleared: number; trashed: number; tick: number },
+    deepLast: null as null | { cleared: number; trashed: number; count: number; keys: string[]; finishedAt: number },
+    deepOutcomes: {} as Record<string, unknown>,
     services: [] as any[],
     sweep: ["a", "b"] as string[],
     servicesDelay: 0,
@@ -83,6 +96,10 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
     scanMs: 400,
   };
   (window as any).__fake = state;
+  const deepRun = () => {
+    const r = state.deepCleaning;
+    return r ? { keys: [...r.keys], done: r.done, current: r.current, cleared: r.cleared, trashed: r.trashed } : null;
+  };
   // Real IPC sends JSON; copying the same way also unwraps Svelte's proxies.
   const copy = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -95,6 +112,55 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
     cached_services: () =>
       state.cachedServices ? { suggestions: copy(state.cachedServices), docker: "running", ollama: "off" } : null,
     sweep_targets: () => copy(state.sweep),
+    deep_clean: ({ rescan }) => {
+      const extra = () => ({ cleaning: deepRun(), lastClean: copy(state.deepLast), outcomes: copy(state.deepOutcomes) });
+      if (rescan && !state.deepCleaning) {
+        state.deepPolls = 1;
+        state.deepOutcomes = {};
+      }
+      if (state.deepPolls > 0) {
+        state.deepPolls -= 1;
+        const progress = { step: "Measuring", done: 42, total: 120, found: 38.2 * GB, fraction: 0.55 };
+        return { supported: true, scanning: true, scannedAt: state.deepScannedAt, progress, rows: [], ...extra() };
+      }
+      state.deepScannedAt ??= Math.floor(Date.now() / 1000);
+      // A clean "in the background": one item every `deepStep` polls.
+      const run = state.deepCleaning;
+      if (run && ++run.tick >= state.deepStep) {
+        run.tick = 0;
+        const id = run.ids[run.done];
+        const row = (state.deep as any[]).find((x) => x.id === id);
+        if (row && state.closeAs[id] === "refused") {
+          state.deepOutcomes[row.key] = { status: "refused", message: "Xcode is running. Quit it first" };
+        } else if (row) {
+          state.deep = state.deep.filter((x: any) => x.id !== id);
+          if (row.removal === "trash") run.trashed += row.disk;
+          else run.cleared += row.disk;
+          state.deepLast ??= { cleared: 0, trashed: 0, count: 0, keys: [], finishedAt: 0 };
+          state.deepLast.count += 1;
+          state.deepLast.keys.push(row.key);
+        }
+        run.done += 1;
+        run.current = run.keys[run.done] ?? null;
+        if (run.done >= run.ids.length) {
+          state.deepLast ??= { cleared: 0, trashed: 0, count: 0, keys: [], finishedAt: 0 };
+          Object.assign(state.deepLast, { cleared: run.cleared, trashed: run.trashed, finishedAt: Date.now() });
+          state.deepCleaning = null;
+        }
+      }
+      return { supported: true, scanning: false, scannedAt: state.deepScannedAt, progress: null, rows: copy(state.deep), ...extra() };
+    },
+    deep_clean_run: ({ ids }) => {
+      const rows = (ids as string[]).map((id) => (state.deep as any[]).find((x) => x.id === id)).filter(Boolean);
+      state.deepOutcomes = {};
+      state.deepLast = null;
+      state.deepCleaning = { ids: rows.map((r: any) => r.id), keys: rows.map((r: any) => r.key), done: 0, current: rows[0]?.key ?? null, cleared: 0, trashed: 0, tick: 0 };
+      return handlers.deep_clean({});
+    },
+    deep_clean_seen: () => {
+      state.deepLast = null;
+      return null;
+    },
     fan_culprits: () => copy(state.fan),
     live_stats: () => {
       // Moves every call so tests can see the meters are live.
@@ -105,6 +171,13 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       return { stats: copy(scan.stats), level: state.level };
     },
     close_item: ({ id, force }) => {
+      const deep = (state.deep as any[]).find((x) => x.id === id);
+      if (deep) {
+        if (state.closeAs[id] === "refused") return { status: "refused", message: "Xcode is running. Quit it first" };
+        state.deep = state.deep.filter((x: any) => x.id !== id);
+        const msg = deep.removal === "trash" ? "Moved to the Trash" : "Cleared";
+        return { status: "closed", message: msg, freed: 0, disk: deep.disk };
+      }
       const svc = (state.services as any[]).find((x) => x.id === id);
       if (svc) {
         state.services = state.services.filter((x: any) => x.id !== id);
@@ -131,6 +204,12 @@ export function installFakeBackend(init: Partial<FakeState> & { suggestions?: un
       return { status: "still_running", message: "Still open, may be asking to save" };
     },
     ignore_item: ({ id }) => {
+      const d = (state.deep as any[]).find((x) => x.id === id);
+      if (d) {
+        state.settings.ignored.push(d.key);
+        state.deep = state.deep.filter((x: any) => x.id !== id);
+        return null;
+      }
       const s = scan.suggestions.find((x: any) => x.id === id) as any;
       state.settings.ignored.push(s.key);
       scan.suggestions = scan.suggestions.filter((x: any) => x.id !== id);

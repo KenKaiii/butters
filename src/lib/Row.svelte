@@ -16,6 +16,7 @@
     onIgnore,
     onForce,
     onSlice,
+    diskWord = true,
   }: {
     s: Suggestion;
     selected: boolean;
@@ -27,6 +28,8 @@
     onForce: () => void;
     /** Knife gesture: called after the user swipes and confirms "Slice". */
     onSlice?: () => void;
+    /** Say "disk" after a disk size (off where every row is disk). */
+    diskWord?: boolean;
   } = $props();
 
   // Butter knife: drag the row sideways to slice it off. Past the threshold it
@@ -161,7 +164,7 @@
     <span class="title">{s.title}</span>
     <span class="meta">{s.reason}{#if aside}{" · "}<span class:flag={!!s.note || !s.polite}>{aside}</span>{/if}</span>
   </label>
-  <span class="mem">{s.disk ? `${bytes(s.disk)} disk` : bytes(s.memory)}</span>
+  <span class="mem">{s.disk ? `${s.upTo ? "up to " : ""}${bytes(s.disk)}${diskWord ? " disk" : ""}` : bytes(s.memory)}</span>
   <button class="ghost" type="button" aria-label={`Ignore ${s.title}`} use:tip={"Ignore"} disabled={pending} onclick={onIgnore}>
     <Icon name="eyeOff" />
   </button>

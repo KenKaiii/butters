@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Menu bar app. Tauri merges this into the bundle's Info.plist. Without
+	     it macOS treats Butters as a regular app whenever it's "opened" (a
+	     notification click, Spotlight, Finder) and gives it a Dock icon. -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>

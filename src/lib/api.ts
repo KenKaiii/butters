@@ -15,7 +15,8 @@ export type Kind =
   | "process"
   | "docker_container"
   | "docker_disk"
-  | "ollama_model";
+  | "ollama_model"
+  | "deep_clean";
 
 export type Level = "smooth" | "busy" | "strained";
 
@@ -46,6 +47,48 @@ export interface Suggestion {
   verb: string;
   /** Disk space it gives back (Docker clean-ups) instead of memory. */
   disk: number;
+  /** The disk figure is a ceiling, not a promise (Deep clean's pnpm store). */
+  upTo?: boolean;
+}
+
+export type DeepGroup = "rebuilds" | "unused" | "yours";
+export type DeepCategory = "caches" | "projects" | "mobile" | "models";
+
+export interface DeepProgress {
+  step: string;
+  /** Within the step, when countable ("12 of 80"); total 0 when not. */
+  done: number;
+  total: number;
+  /** Disk measured so far. */
+  found: number;
+  /** 0..1 for the whole look. */
+  fraction: number;
+}
+
+export interface DeepRow extends Suggestion {
+  group: DeepGroup;
+  /** Which tab it shows in. */
+  category: DeepCategory;
+  upTo: boolean;
+  /** What cleaning does to it. */
+  removal: "delete" | "trash";
+}
+
+export interface DeepStatus {
+  /** False where Deep clean isn't available (not macOS). */
+  supported: boolean;
+  scanning: boolean;
+  /** Unix seconds of the last finished look. */
+  scannedAt: number | null;
+  /** How far the current look has got (while scanning). */
+  progress: DeepProgress | null;
+  rows: DeepRow[];
+  /** A clean in progress (it runs in the background, panel open or not). */
+  cleaning: { keys: string[]; done: number; current: string | null; cleared: number; trashed: number } | null;
+  /** The last finished clean, until the panel has shown it. */
+  lastClean: { cleared: number; trashed: number; count: number; keys: string[]; finishedAt: number } | null;
+  /** Why rows from the last clean weren't cleaned, by key. */
+  outcomes: Record<string, Outcome>;
 }
 
 export interface Protected {
@@ -88,6 +131,8 @@ export interface Settings {
   sounds: boolean;
   shortcut: string;
   ignored: string[];
+  /** Deep clean pre-ticks things unused this many days (30, 90 or 180). */
+  deep_clean_days: number;
 }
 
 export interface UpdateStatus {
@@ -105,7 +150,10 @@ export interface Lifetime {
   closed: number;
   by_kind: Record<string, number>;
   best_day: number;
+  /** Disk cleaned up (Deep clean, Docker clean-ups): what deleting really frees. */
   disk_freed: number;
+  /** The part of disk_freed that went to the Trash (freed once it's emptied). */
+  disk_trashed?: number;
 }
 
 export interface Culprit {
@@ -132,6 +180,12 @@ export const api = {
   smoothness: () => invoke<Smoothness>("smoothness"),
   fan: () => invoke<{ culprits: Culprit[]; minutes: number }>("fan_culprits"),
   sweepTargets: () => invoke<string[]>("sweep_targets"),
+  /** Deep clean: starts a look on first use (or when `rescan`), else reports progress. */
+  deepClean: (rescan = false) => invoke<DeepStatus>("deep_clean", { rescan }),
+  /** Starts cleaning these rows in the background. */
+  deepCleanRun: (ids: string[]) => invoke<DeepStatus>("deep_clean_run", { ids }),
+  /** The last clean's result has been shown. */
+  deepCleanSeen: () => invoke<void>("deep_clean_seen"),
   live: () => invoke<{ stats: Stats; level: Level }>("live_stats"),
   /** Fire and forget; the backend checks the Sounds setting. */
   sound: (name: Sound) => void invoke("play_sound", { name }).catch(() => {}),

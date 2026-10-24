@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod alerts;
 pub mod app;
+pub mod deepclean;
 pub mod docker_activity;
 pub mod engine;
 pub mod history;
@@ -44,7 +45,9 @@ pub fn run() {
         )
         .manage(updates::UpdateState::default())
         .setup(|app| {
-            // Menu bar app: no Dock icon, no app switcher entry.
+            // Menu bar app: no Dock icon, no app switcher entry. LSUIElement in
+            // Info.plist keeps it that way when macOS "opens" the running app
+            // (notification clicks); this covers unbundled `cargo run`.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let log = app.path().app_log_dir().map(|d| log::Log::open(&d)).unwrap_or_else(|_| log::Log::disabled());
@@ -82,6 +85,9 @@ pub fn run() {
             app::smoothness,
             app::fan_culprits,
             app::sweep_targets,
+            app::deep_clean,
+            app::deep_clean_run,
+            app::deep_clean_seen,
             sound::play_sound,
             permissions::notify_permission,
             permissions::fix_notify_permission,
@@ -134,4 +140,41 @@ fn log_panics(log: &log::Log) {
         log.error(format!("Crashed: {msg}{at}"));
         default(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    /// Without LSUIElement, a click on a Butters notification makes macOS
+    /// promote the running app to a regular Dock app.
+    #[test]
+    fn bundle_is_a_menu_bar_app() {
+        let plist: String = include_str!("../Info.plist").split_whitespace().collect();
+        assert!(plist.contains("<key>LSUIElement</key><true/>"), "Info.plist must set LSUIElement to true");
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    /// Every command the app registers must also be on the panel's
+    /// allow-list (build.rs + capabilities), or Tauri rejects the call.
+    #[test]
+    fn every_command_is_allowed_for_the_panel() {
+        let lib = include_str!("lib.rs");
+        let build = include_str!("../build.rs");
+        let caps = include_str!("../capabilities/panel.json");
+        let start = lib.find("generate_handler![").expect("handler list") + "generate_handler![".len();
+        let list = &lib[start..start + lib[start..].find(']').expect("end of list")];
+        let mut checked = 0;
+        for line in list.lines().map(str::trim) {
+            let Some(name) = line.strip_suffix(',').and_then(|l| l.rsplit("::").next()) else { continue };
+            if name.is_empty() || name.starts_with('#') {
+                continue;
+            }
+            assert!(build.contains(&format!("\"{name}\"")), "{name} missing from build.rs COMMANDS");
+            let allow = format!("\"allow-{}\"", name.replace('_', "-"));
+            assert!(caps.contains(&allow), "{allow} missing from capabilities/panel.json");
+            checked += 1;
+        }
+        assert!(checked > 20, "parsed the handler list ({checked})");
+    }
 }

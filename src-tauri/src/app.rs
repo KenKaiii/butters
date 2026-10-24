@@ -12,6 +12,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
 use crate::actions::{self, Guard, Outcome, ProcTarget};
+use crate::deepclean;
 use crate::alerts::{self, AlertState, Level};
 use crate::engine::assess::{self, Context, Verdict, fmt_bytes, fmt_duration};
 use crate::engine::model::{Group, Kind};
@@ -66,6 +67,7 @@ enum Target {
     Container { key: String, id: String, name: String, memory: u64 },
     Model { key: String, name: String, memory: u64 },
     DockerDisk { key: String, which: DiskWhich },
+    Deep { item: Box<deepclean::Item> },
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +81,7 @@ impl Target {
     fn key(&self) -> &str {
         match self {
             Target::Procs { key, .. } | Target::Container { key, .. } | Target::Model { key, .. } | Target::DockerDisk { key, .. } => key,
+            Target::Deep { item } => &item.key,
         }
     }
 
@@ -89,6 +92,7 @@ impl Target {
             Target::Container { name, .. } => format!("Container: {name}"),
             Target::Model { name, .. } => format!("Ollama model: {name}"),
             Target::DockerDisk { key, .. } => key.clone(),
+            Target::Deep { item } => item.title.clone(),
         }
     }
 }
@@ -121,6 +125,8 @@ pub struct AppState {
     /// notes what appeared or went away, not every refresh.
     logged_procs: Mutex<HashMap<String, String>>,
     logged_services: Mutex<HashMap<String, String>>,
+    /// The latest Deep clean look (it only runs when asked).
+    deep: Mutex<DeepStatus>,
 }
 
 impl AppState {
@@ -153,6 +159,7 @@ impl AppState {
             log,
             logged_procs: Mutex::new(HashMap::new()),
             logged_services: Mutex::new(HashMap::new()),
+            deep: Mutex::new(DeepStatus::default()),
         }
     }
 }
@@ -164,10 +171,11 @@ fn on_off(b: bool) -> &'static str {
 fn settings_line(s: &Settings) -> String {
     let shortcut = if s.shortcut.is_empty() { "off" } else { s.shortcut.as_str() };
     format!(
-        "alerts {}, sounds {}, launch at login {}, shortcut {shortcut}, {} ignored",
+        "alerts {}, sounds {}, launch at login {}, shortcut {shortcut}, deep clean ticks after {} days, {} ignored",
         on_off(s.alerts),
         on_off(s.sounds),
         on_off(s.launch_at_login),
+        s.deep_clean_days,
         s.ignored.len()
     )
 }
@@ -674,7 +682,7 @@ fn do_scan_services(state: &AppState) -> ServicesResult {
     }
     {
         let mut t = lock(&state.targets);
-        t.retain(|_, v| matches!(v, Target::Procs { .. }));
+        t.retain(|_, v| matches!(v, Target::Procs { .. } | Target::Deep { .. }));
         t.extend(targets);
     }
     {
@@ -729,6 +737,340 @@ pub fn sweep_targets(state: State<'_, AppState>) -> Vec<String> {
     lock(&state.sweepable).clone()
 }
 
+/// One Deep clean row, shaped like a suggestion so the panel's rows fit.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepRow {
+    id: String,
+    key: String,
+    kind: Kind,
+    title: String,
+    detail: Option<String>,
+    reason: String,
+    note: Option<String>,
+    memory: u64,
+    cpu: f32,
+    ports: Vec<u16>,
+    recommended: bool,
+    polite: bool,
+    verb: &'static str,
+    disk: u64,
+    group: deepclean::Group,
+    /// Which tab it shows in.
+    category: deepclean::Category,
+    /// The size is a ceiling (pnpm keeps what projects use).
+    up_to: bool,
+    /// "delete" or "trash": what cleaning does to it.
+    removal: &'static str,
+}
+
+impl DeepRow {
+    fn new(id: String, item: &deepclean::Item) -> DeepRow {
+        DeepRow {
+            id,
+            key: item.key.clone(),
+            kind: Kind::DeepClean,
+            title: item.title.clone(),
+            detail: item.detail.clone(),
+            reason: item.reason.clone(),
+            note: item.note.clone(),
+            memory: 0,
+            cpu: 0.0,
+            ports: Vec::new(),
+            recommended: item.recommended,
+            polite: true,
+            verb: "Clean",
+            disk: item.bytes,
+            group: item.group,
+            category: item.category(),
+            up_to: item.up_to,
+            removal: item.removal.label(),
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepStatus {
+    supported: bool,
+    scanning: bool,
+    /// Unix seconds of the last finished look.
+    scanned_at: Option<u64>,
+    /// How far the current look has got (while `scanning`).
+    progress: Option<deepclean::Progress>,
+    rows: Vec<DeepRow>,
+    /// A clean in progress. It runs here, not in the panel, so it keeps
+    /// going when the panel closes.
+    cleaning: Option<CleanRun>,
+    /// The last clean that finished, until the panel has shown it.
+    last_clean: Option<CleanDone>,
+    /// Rows that couldn't be cleaned in the last run, and why (by key).
+    outcomes: HashMap<String, Outcome>,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanRun {
+    /// Every key in this run, in order.
+    keys: Vec<String>,
+    /// Keys handled so far (cleaned or not).
+    done: usize,
+    /// The one being cleaned now.
+    current: Option<String>,
+    cleared: u64,
+    trashed: u64,
+}
+
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanDone {
+    /// Deleted outright.
+    cleared: u64,
+    /// Moved to the Trash: comes back once it's emptied.
+    trashed: u64,
+    /// How many were cleaned.
+    count: usize,
+    /// Keys that were cleaned (the panel melts them if it's watching).
+    keys: Vec<String>,
+    finished_at: u64,
+}
+
+/// A finished look is reused for this long; after that, opening Deep clean
+/// looks again (folders change as you work).
+const DEEP_FRESH_SECS: u64 = 10 * 60;
+
+/// Whether opening Deep clean should start a new look: on first use, when
+/// asked, or once the last look is 10 minutes old. Never while one is
+/// already running, and never mid-clean (the rows must keep their ids).
+fn should_look(d: &DeepStatus, rescan: bool, now: u64) -> bool {
+    let stale = d.scanned_at.is_none_or(|t| now.saturating_sub(t) >= DEEP_FRESH_SECS);
+    !d.scanning && d.cleaning.is_none() && (rescan || stale)
+}
+
+/// Deep clean only looks at the real disk in the real app.
+fn deep_supported() -> bool {
+    deepclean::supported() && !cfg!(feature = "playground") && e2e_only_pid().is_none()
+}
+
+/// Home, resolved, so every path Deep clean checks compares exactly.
+fn home_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().home_dir().ok().and_then(|h| deepclean::canonical(&h))
+}
+
+/// Deep clean's state; starts a look on first use or when `rescan` is set.
+/// The look runs on its own thread (it can take a minute), so the panel
+/// polls this until `scanning` is false. It keeps going if the panel closes.
+#[tauri::command]
+pub fn deep_clean(app: AppHandle, rescan: bool) -> DeepStatus {
+    let state = app.state::<AppState>();
+    let supported = deep_supported();
+    let start = {
+        let mut d = lock(&state.deep);
+        let start = supported && should_look(&d, rescan, history::now_secs());
+        if start {
+            d.scanning = true;
+            // Why rows weren't cleaned stays until you look again yourself
+            // or clean again; a look that starts on its own keeps it.
+            if rescan {
+                d.outcomes.clear();
+            }
+            d.progress = Some(deepclean::Progress { step: "Starting", done: 0, total: 0, found: 0, fraction: 0.0 });
+        }
+        start
+    };
+    if start {
+        let handle = app.clone();
+        let spawned = std::thread::Builder::new().name("butters-deep-clean".into()).spawn(move || run_deep_scan(&handle));
+        if spawned.is_err() {
+            let mut d = lock(&state.deep);
+            d.scanning = false;
+            d.progress = None;
+        }
+    }
+    let mut status = lock(&state.deep).clone();
+    status.supported = supported;
+    status
+}
+
+fn run_deep_scan(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let t0 = Instant::now();
+    let (days, ignored) = {
+        let s = lock(&state.settings);
+        (s.deep_clean_days as u64, s.ignored.clone())
+    };
+    let items: Vec<deepclean::Item> = match home_dir(app) {
+        Some(home) => {
+            let deep = &state.deep;
+            let report = |p: deepclean::Progress| lock(deep).progress = Some(p);
+            deepclean::scan(&home, history::now_secs(), days, deepclean::MIN_BYTES, &deepclean::Procs::current(), &report)
+        }
+        None => Vec::new(),
+    }
+    .into_iter()
+    .filter(|i| !ignored.contains(&i.key))
+    .collect();
+    let total: u64 = items.iter().map(|i| i.bytes).sum();
+    let ticked: u64 = items.iter().filter(|i| i.recommended).map(|i| i.bytes).sum();
+    state.log.info(format!(
+        "Deep clean looked in {:.0} s: {} items, {} in total, {} pre-ticked",
+        t0.elapsed().as_secs_f32(),
+        items.len(),
+        fmt_bytes(total),
+        fmt_bytes(ticked)
+    ));
+    let seq = state.seq.fetch_add(1, Ordering::Relaxed);
+    let mut rows = Vec::new();
+    let mut targets = HashMap::new();
+    for (i, item) in items.into_iter().enumerate() {
+        state.log.info(format!(
+            "Deep clean found \"{}\" ({:?}): {}, {}{}{}",
+            item.title,
+            item.group,
+            item.reason,
+            fmt_bytes(item.bytes),
+            if item.recommended { ", pre-ticked" } else { "" },
+            item.note.as_deref().map(|n| format!(", note: {n}")).unwrap_or_default(),
+        ));
+        let id = format!("c{seq}-{i}");
+        rows.push(DeepRow::new(id.clone(), &item));
+        targets.insert(id, Target::Deep { item: Box::new(item) });
+    }
+    {
+        let mut t = lock(&state.targets);
+        t.retain(|_, v| !matches!(v, Target::Deep { .. }));
+        t.extend(targets);
+    }
+    // Settings may have changed while it looked: drop what's now ignored,
+    // and if the cutoff changed, look again next time.
+    let (days_now, ignored_now) = {
+        let s = lock(&state.settings);
+        (s.deep_clean_days as u64, s.ignored.clone())
+    };
+    rows.retain(|r| !ignored_now.contains(&r.key));
+    let mut d = lock(&state.deep);
+    d.rows = rows;
+    d.scanning = false;
+    d.progress = None;
+    d.scanned_at = (days_now == days).then(history::now_secs);
+}
+
+/// Cleans one Deep clean item, checking it again first.
+fn clean_deep(app: &AppHandle, item: &deepclean::Item) -> Outcome {
+    let Some(home) = home_dir(app) else {
+        return Outcome::Failed { message: "Couldn't find your home folder".into() };
+    };
+    match deepclean::clean(item, &home, &deepclean::Procs::current()) {
+        Ok(done) => {
+            let size = fmt_bytes(done.bytes);
+            let bin = if cfg!(windows) { "the Recycle Bin" } else { "the Trash" };
+            let mut message = if done.trashed { format!("Moved {size} to {bin}") } else { format!("Cleared {size}") };
+            if done.failed > 0 {
+                message.push_str(&format!(", {} couldn't be removed", done.failed));
+            }
+            Outcome::Closed { message, freed: 0, disk: done.bytes }
+        }
+        Err(deepclean::CleanError::Blocked(message)) => Outcome::Refused { message },
+        Err(deepclean::CleanError::Failed(message)) => Outcome::Failed { message },
+    }
+}
+
+/// Starts cleaning these Deep clean rows, one at a time, on a background
+/// thread. The panel watches through `deep_clean`; closing the panel or
+/// leaving the view doesn't stop it.
+#[tauri::command]
+pub fn deep_clean_run(app: AppHandle, ids: Vec<String>) -> Result<DeepStatus, String> {
+    let state = app.state::<AppState>();
+    let picked: Vec<(String, String)> = {
+        let targets = lock(&state.targets);
+        ids.iter()
+            .filter_map(|id| match targets.get(id) {
+                Some(Target::Deep { item }) => Some((id.clone(), item.key.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    if picked.is_empty() || picked.len() != ids.len() {
+        return Err("List changed. Look again.".into());
+    }
+    {
+        let mut d = lock(&state.deep);
+        if d.scanning || d.cleaning.is_some() {
+            return Err("Still busy. Try again in a moment.".into());
+        }
+        d.outcomes.clear();
+        d.last_clean = None;
+        d.cleaning = Some(CleanRun { keys: picked.iter().map(|(_, k)| k.clone()).collect(), ..CleanRun::default() });
+    }
+    state.log.info(format!("Deep clean: cleaning {} item{}", picked.len(), if picked.len() == 1 { "" } else { "s" }));
+    let handle = app.clone();
+    let spawned = std::thread::Builder::new().name("butters-deep-clean-run".into()).spawn(move || run_deep_clean(&handle, picked));
+    if let Err(e) = spawned {
+        lock(&state.deep).cleaning = None;
+        return Err(format!("Couldn't start: {e}"));
+    }
+    Ok(deep_clean(app, false))
+}
+
+fn run_deep_clean(app: &AppHandle, picked: Vec<(String, String)>) {
+    let state = app.state::<AppState>();
+    let mut done = CleanDone::default();
+    for (id, key) in picked {
+        if let Some(run) = lock(&state.deep).cleaning.as_mut() {
+            run.current = Some(key.clone());
+        }
+        let removal = match lock(&state.targets).get(&id) {
+            Some(Target::Deep { item }) => item.removal.clone(),
+            _ => deepclean::Removal::Delete,
+        };
+        let outcome = close_now(app, &id, false);
+        let mut d = lock(&state.deep);
+        match &outcome {
+            Outcome::Closed { disk, .. } => {
+                if removal == deepclean::Removal::Trash {
+                    done.trashed += disk;
+                } else {
+                    done.cleared += disk;
+                }
+                done.count += 1;
+                done.keys.push(key.clone());
+            }
+            other => {
+                d.outcomes.insert(key.clone(), other.clone());
+            }
+        }
+        if let Some(run) = d.cleaning.as_mut() {
+            run.done += 1;
+            run.current = None;
+            run.cleared = done.cleared;
+            run.trashed = done.trashed;
+        }
+    }
+    done.finished_at = history::now_secs();
+    let summary = format!(
+        "{} cleaned up{}",
+        fmt_bytes(done.cleared + done.trashed),
+        if done.trashed > 0 { format!(", {} of it in the {}", fmt_bytes(done.trashed), if cfg!(windows) { "Recycle Bin" } else { "Trash" }) } else { String::new() }
+    );
+    state.log.info(format!("Deep clean finished: {} of them, {summary}", done.count));
+    let count = done.count;
+    {
+        let mut d = lock(&state.deep);
+        d.cleaning = None;
+        d.last_clean = Some(done);
+    }
+    // Finished while the panel was closed: say so, like any other alert.
+    if count > 0 && !state.panel_open.load(Ordering::Relaxed) && lock(&state.settings).alerts {
+        crate::permissions::notify(app, &format!("Deep clean done: {summary}"));
+    }
+}
+
+/// The panel has shown the last clean's result; don't show it again.
+#[tauri::command]
+pub fn deep_clean_seen(state: State<'_, AppState>) {
+    lock(&state.deep).last_clean = None;
+}
+
 /// Today's smoothness score and the week's freed memory.
 #[tauri::command]
 pub fn smoothness(state: State<'_, AppState>) -> Summary {
@@ -769,8 +1111,23 @@ pub async fn scan_services(app: AppHandle) -> Result<ServicesResult, String> {
 #[tauri::command]
 pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Deep clean items only go through deep_clean_run: one clean at a
+        // time, tracked, never alongside a look.
+        if matches!(lock(&app.state::<AppState>().targets).get(&id), Some(Target::Deep { .. })) {
+            return Outcome::Refused { message: "Use Clean in Deep clean".into() };
+        }
+        close_now(&app, &id, force)
+    })
+    .await
+    .map_err(blocking_err)
+}
+
+/// Closes (or cleans) one item from the latest lists, logs it and adds it
+/// to the history. Blocking: call it off the main thread.
+fn close_now(app: &AppHandle, id: &str, force: bool) -> Outcome {
+    {
         let state = app.state::<AppState>();
-        let Some(target) = lock(&state.targets).get(&id).cloned() else {
+        let Some(target) = lock(&state.targets).get(id).cloned() else {
             state.log.warn("Close asked for an item from an old list; told the panel to refresh");
             return Outcome::Refused { message: "List changed. Refresh.".into() };
         };
@@ -789,6 +1146,7 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
                 Ok(()) => Outcome::Closed { message: format!("Unloaded {name}"), freed: *memory, disk: 0 },
                 Err(e) => Outcome::Failed { message: format!("Couldn't unload: {e}") },
             },
+            Target::Deep { item } => clean_deep(app, item),
             Target::DockerDisk { which, .. } => {
                 let r = match which {
                     DiskWhich::BuildCache => services::docker_prune_build_cache(),
@@ -804,17 +1162,27 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
         let (level, what, message) = outcome_entry(&outcome);
         state.log.write(level, &format!("{what} \"{label}\": {message}"));
         if let Outcome::Closed { freed, disk, .. } = &outcome {
-            lock(&state.targets).remove(&id);
-            if let Target::DockerDisk { .. } = &target {
+            lock(&state.targets).remove(id);
+            let disk_kind = match &target {
+                Target::DockerDisk { .. } => Some((Kind::DockerDisk, false)),
+                Target::Deep { item } => {
+                    lock(&state.deep).rows.retain(|r| r.key != item.key);
+                    Some((Kind::DeepClean, item.removal == deepclean::Removal::Trash))
+                }
+                _ => None,
+            };
+            if let Some((k, trashed)) = disk_kind {
                 let mut h = lock(&state.history);
-                h.record_disk(*disk);
+                h.record_disk(*disk, &kind_name(k), trashed);
                 let _ = h.save(&state.history_path);
                 return outcome;
             }
             let kind = match &target {
                 Target::Procs { kind, .. } => *kind,
                 Target::Container { .. } => Kind::DockerContainer,
-                Target::Model { .. } | Target::DockerDisk { .. } => Kind::OllamaModel,
+                Target::Model { .. } => Kind::OllamaModel,
+                // Recorded as disk above and returned early.
+                Target::DockerDisk { .. } | Target::Deep { .. } => return outcome,
             };
             let kind = kind_name(kind);
             let mut h = lock(&state.history);
@@ -822,15 +1190,14 @@ pub async fn close_item(app: AppHandle, id: String, force: bool) -> Result<Outco
             let _ = h.save(&state.history_path);
         }
         outcome
-    })
-    .await
-    .map_err(blocking_err)
+    }
 }
 
 #[tauri::command]
 pub fn ignore_item(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let (key, label) = lock(&state.targets).get(&id).map(|t| (t.key().to_string(), t.label())).ok_or("List changed. Refresh.")?;
     state.log.info(format!("Ignoring \"{label}\" from now on"));
+    lock(&state.deep).rows.retain(|r| r.key != key);
     let mut s = lock(&state.settings);
     if !s.ignored.contains(&key) {
         s.ignored.push(key);
@@ -879,6 +1246,10 @@ pub fn set_settings(app: AppHandle, state: State<'_, AppState>, settings: Settin
         let old = std::mem::replace(&mut *s, new);
         if *s != old {
             state.log.info(format!("Settings changed: {}", settings_line(&s)));
+        }
+        if s.deep_clean_days != old.deep_clean_days {
+            // What's ticked depends on it: look again next time.
+            lock(&state.deep).scanned_at = None;
         }
         s.save(&state.settings_path).map_err(|e| {
             state.log.error(format!("Couldn't save settings: {e}"));
@@ -1063,6 +1434,23 @@ mod tests {
             host_root: None,
             growth: None,
         }
+    }
+
+    #[test]
+    fn deep_clean_reuses_a_look_for_ten_minutes() {
+        let now = 1_000_000;
+        let mut d = DeepStatus::default();
+        assert!(should_look(&d, false, now), "first use looks");
+        d.scanned_at = Some(now - 9 * 60);
+        assert!(!should_look(&d, false, now), "9 minutes old: reused");
+        assert!(should_look(&d, true, now), "Look again always looks");
+        d.scanned_at = Some(now - 10 * 60);
+        assert!(should_look(&d, false, now), "10 minutes old: looks again");
+        d.scanning = true;
+        assert!(!should_look(&d, true, now), "never two looks at once");
+        d.scanning = false;
+        d.cleaning = Some(CleanRun::default());
+        assert!(!should_look(&d, true, now), "never mid-clean");
     }
 
     #[test]

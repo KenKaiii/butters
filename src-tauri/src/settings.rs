@@ -14,11 +14,20 @@ pub struct Settings {
     pub shortcut: String,
     /// Groups the user asked Butters to leave alone.
     pub ignored: Vec<String>,
+    /// Deep clean pre-ticks things unused for this many days.
+    pub deep_clean_days: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { alerts: true, launch_at_login: false, sounds: true, shortcut: DEFAULT_SHORTCUT.to_string(), ignored: Vec::new() }
+        Settings {
+            alerts: true,
+            launch_at_login: false,
+            sounds: true,
+            shortcut: DEFAULT_SHORTCUT.to_string(),
+            ignored: Vec::new(),
+            deep_clean_days: DEFAULT_DEEP_CLEAN_DAYS,
+        }
     }
 }
 
@@ -26,6 +35,9 @@ const MAX_IGNORED: usize = 500;
 pub const DEFAULT_SHORTCUT: &str = "Alt+Super+B";
 /// The shortcuts the panel offers (shown as ⌥⌘B etc. on Mac, Ctrl+Alt+B on Windows).
 pub const SHORTCUTS: &[&str] = &["Alt+Super+B", "Control+Alt+B", "Alt+Super+Space", ""];
+pub const DEFAULT_DEEP_CLEAN_DAYS: u32 = 90;
+/// The choices the panel offers: one, three or six months.
+pub const DEEP_CLEAN_DAYS: &[u32] = &[30, 90, 180];
 
 impl Settings {
     pub fn path(config_dir: &Path) -> PathBuf {
@@ -58,6 +70,9 @@ impl Settings {
         if !SHORTCUTS.contains(&self.shortcut.as_str()) {
             self.shortcut = DEFAULT_SHORTCUT.to_string();
         }
+        if !DEEP_CLEAN_DAYS.contains(&self.deep_clean_days) {
+            self.deep_clean_days = DEFAULT_DEEP_CLEAN_DAYS;
+        }
         self
     }
 }
@@ -71,7 +86,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("butters-test-{}", std::process::id()));
         let path = Settings::path(&dir);
         assert_eq!(Settings::load(&path), Settings::default());
-        let s = Settings { alerts: false, launch_at_login: true, sounds: false, shortcut: "".into(), ignored: vec!["app:/x".into()] };
+        let s = Settings { alerts: false, launch_at_login: true, sounds: false, shortcut: "".into(), ignored: vec!["app:/x".into()], deep_clean_days: 30 };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
         std::fs::write(&path, b"{not json").unwrap();
@@ -88,5 +103,13 @@ mod tests {
         assert_eq!(s.shortcut, DEFAULT_SHORTCUT);
         let off = Settings { shortcut: "".into(), ..Settings::default() }.sanitized();
         assert_eq!(off.shortcut, "");
+    }
+
+    #[test]
+    fn deep_clean_cutoff_is_one_of_the_offered_choices() {
+        let odd = Settings { deep_clean_days: 7, ..Settings::default() }.sanitized();
+        assert_eq!(odd.deep_clean_days, DEFAULT_DEEP_CLEAN_DAYS);
+        let six = Settings { deep_clean_days: 180, ..Settings::default() }.sanitized();
+        assert_eq!(six.deep_clean_days, 180);
     }
 }

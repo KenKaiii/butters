@@ -50,6 +50,8 @@ pub enum Kind {
     DockerContainer,
     DockerDisk,
     OllamaModel,
+    /// Leftovers on disk from the Deep clean view.
+    DeepClean,
 }
 
 /// A set of processes the user would think of as one thing: "Chrome",

@@ -4,6 +4,7 @@ const MB = 1024 * 1024;
 const GB = 1024 * MB;
 
 export function bytes(n: number): string {
+  if (!(n > 0)) return "0 MB"; // nothing is nothing, not "1 MB"
   if (n >= GB) return `${(n / GB).toFixed(1)} GB`;
   return `${Math.max(1, Math.round(n / MB))} MB`;
 }

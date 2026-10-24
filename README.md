@@ -46,6 +46,7 @@ Butters lives in your menu bar and keeps a busy dev machine running smooth. A da
 
 - **One list of what you could close:** each with what it's holding and why it's there. Leftovers are pre-ticked, anything you might still want isn't.
 - **Sweep:** one button for the end of the day. Leftovers, idle agents and idle containers in one go. You confirm first.
+- **Deep clean:** the disk side of a dev machine. Package caches and build folders of projects you stopped working on, plus Xcode build files, old iPhone support files and simulators you haven't opened in months on a Mac. Caches that rebuild themselves are deleted; the rest goes to the Trash (Recycle Bin on Windows). Anything you can't easily get back (archives, models, emulators) is never ticked for you.
 - **Live meters:** memory as a melting stick of butter, CPU as a sizzling pan. They update every 2 seconds.
 - **Lifetime stats:** everything Butters has freed since you installed it, your best day, and what it closed most.
 - **Gentle alerts:** a notification when memory is low, the machine is running hot, the CPU stays maxed out, or something starts leaking. At most once every 30 minutes each.

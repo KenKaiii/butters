@@ -8,7 +8,12 @@
   import { butterEase, dissolve, ms } from "./motion";
   import { tip } from "./tip";
 
-  let { smooth, onBack, tab: initialTab = "life" }: { smooth: Smoothness | null; onBack: () => void; tab?: "life" | "fan" } = $props();
+  let {
+    smooth,
+    onBack,
+    tab: initialTab = "life",
+    bin = "Trash",
+  }: { smooth: Smoothness | null; onBack: () => void; tab?: "life" | "fan"; bin?: string } = $props();
 
   // svelte-ignore state_referenced_locally
   let tab = $state<"life" | "fan">(initialTab);
@@ -40,6 +45,7 @@
     local_model: "Local models",
     ollama_model: "Ollama models",
     docker_disk: "Docker clean-ups",
+    deep_clean: "Deep cleans",
     docker_container: "Containers",
     container_runtime: "Docker",
     browser: "Browsers",
@@ -50,6 +56,17 @@
   };
 
   const life = $derived(smooth?.lifetime);
+  // Disk clean-ups count apart from closing things: memory and disk are
+  // different numbers, and "closed" means apps, servers and sessions.
+  const DISK_KINDS = ["deep_clean", "docker_disk"];
+  const cleaned = $derived(DISK_KINDS.reduce((n, k) => n + (life?.by_kind[k] ?? 0), 0));
+  const closedCount = $derived(Math.max(0, (life?.closed ?? 0) - cleaned));
+  // The big number: memory freed, or disk when only disk has been cleaned.
+  const diskHero = $derived(!!life && life.freed <= 0 && life.disk_freed > 0);
+  const heroValue = $derived(diskHero ? (life?.disk_freed ?? 0) : (life?.freed ?? 0));
+  const heroLabel = $derived(diskHero ? "Disk cleaned up" : "Memory freed");
+  const trashed = $derived(life?.disk_trashed ?? 0);
+  const orDash = (n: number) => (n > 0 ? bytes(n) : "–");
   const total = new Tween(0, { easing: butterEase });
   const big = $derived(bytes(Math.max(0, total.current)).split(" "));
   const kinds = $derived(
@@ -60,13 +77,13 @@
   );
   const most = $derived(Math.max(1, ...kinds.map((k) => k.n)));
   const since = $derived(life?.since ? new Date(life.since * 1000) : null);
-  const days = $derived(since ? Math.max(1, Math.floor((Date.now() - since.getTime()) / 86_400_000)) : 0);
+  const days = $derived(since ? Math.max(0, Math.floor((Date.now() - since.getTime()) / 86_400_000)) : 0);
 
   // The total eases up over the last stretch only, so it settles rather than
   // racing from zero; switching tabs doesn't replay it.
   let counted = false;
   $effect(() => {
-    const target = life?.freed ?? 0;
+    const target = heroValue;
     if (!counted && target > 0) {
       counted = true;
       total.set(target * 0.82, { duration: 0 });
@@ -114,26 +131,40 @@
       <p class="empty muted">Nothing closed yet</p>
     {:else}
       <div class="hero">
-        <p class="label">Freed in total</p>
-        <p class="big" aria-label={`${bytes(life.freed)} freed in total`}>
+        <p class="label">{heroLabel}</p>
+        <p class="big" aria-label={`${bytes(heroValue)} ${diskHero ? "disk cleaned up" : "memory freed"}`}>
           <span class="num">{big[0]}</span><span class="unit">{big[1]}</span>
         </p>
         {#if since}
           <p class="since muted" use:tip={{ text: since.toLocaleString(), onlyIfClipped: true }}>
-            Since {since.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })} · {days} day{days === 1 ? "" : "s"}
+            Since {since.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })} · {days === 0 ? "today" : `${days} day${days === 1 ? "" : "s"}`}
           </p>
+        {/if}
+        {#if diskHero && trashed > 0}
+          <p class="since muted">{bytes(trashed)} of it went to the {bin}, freed once it's emptied</p>
         {/if}
       </div>
 
       <div class="grid">
-        <div class="cell"><span class="muted">Closed</span><strong>{life.closed}</strong></div>
-        <div class="cell"><span class="muted">Best day</span><strong>{bytes(life.best_day)}</strong></div>
-        <div class="cell"><span class="muted">This week</span><strong>{bytes(smooth?.freedWeek ?? 0)}</strong></div>
-        <div class="cell"><span class="muted">{life.disk_freed ? "Disk cleared" : "Today"}</span><strong>{life.disk_freed ? bytes(life.disk_freed) : smooth?.score != null ? `Buttery ${smooth.score}` : "–"}</strong></div>
+        {#if diskHero}
+          <div class="cell"><span class="muted">Cleaned</span><strong>{cleaned}</strong></div>
+          <div class="cell"><span class="muted">Closed</span><strong>{closedCount}</strong></div>
+        {:else}
+          <div class="cell"><span class="muted">Closed</span><strong>{closedCount}</strong></div>
+          <div class="cell"><span class="muted">Best day</span><strong>{orDash(life.best_day)}</strong></div>
+        {/if}
+        <div class="cell"><span class="muted">{diskHero ? "Memory this week" : "This week"}</span><strong>{orDash(smooth?.freedWeek ?? 0)}</strong></div>
+        {#if !diskHero && life.disk_freed > 0}
+          <div class="cell" use:tip={trashed > 0 ? { text: "Disk cleaned up", lines: [`${bytes(trashed)} of it went to the ${bin}`, `Freed once the ${bin} is emptied`] } : "Disk cleaned up"}>
+            <span class="muted">Disk cleaned up</span><strong>{bytes(life.disk_freed)}</strong>
+          </div>
+        {:else}
+          <div class="cell"><span class="muted">Today</span><strong>{smooth?.score != null ? `Buttery ${smooth.score}` : "–"}</strong></div>
+        {/if}
       </div>
 
       {#if kinds.length}
-        <h2 class="section">What it closed</h2>
+        <h2 class="section">{cleaned ? "What it closed and cleaned" : "What it closed"}</h2>
         <ul class="kinds">
           {#each kinds as k, i (k.label)}
             <li>

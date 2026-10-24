@@ -50,6 +50,8 @@ fn find_docker() -> Option<PathBuf> {
             candidates.push(PathBuf::from(home).join(".orbstack/bin/docker"));
         }
     }
+    #[cfg(target_os = "linux")]
+    candidates.extend(["/usr/bin/docker", "/usr/local/bin/docker", "/snap/bin/docker"].map(PathBuf::from));
     #[cfg(windows)]
     {
         if let Ok(pf) = std::env::var("ProgramFiles") {
@@ -65,7 +67,30 @@ fn find_docker() -> Option<PathBuf> {
 /// Runs a program with fixed arguments (never through a shell), with a time limit.
 fn run(program: &PathBuf, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut cmd = Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(args);
+    run_command(cmd, timeout)
+}
+
+/// Runs a prepared command (no stdin, stderr dropped) and returns its
+/// output, killing it if it takes longer than `timeout`.
+pub(crate) fn run_command(cmd: Command, timeout: Duration) -> Result<String, String> {
+    run_command_limited(cmd, timeout, 4 * 1024 * 1024)
+}
+
+/// `run_command` with a different cap on how much output is read. Output
+/// past the cap is an error, never silently cut short.
+pub(crate) fn run_command_limited(cmd: Command, timeout: Duration, max_bytes: u64) -> Result<String, String> {
+    let (ok, out) = run_command_raw(cmd, timeout, max_bytes)?;
+    if !ok {
+        return Err("command failed".into());
+    }
+    String::from_utf8(out).map_err(|_| "unreadable output".to_string())
+}
+
+/// Runs a command and returns whether it succeeded plus its raw output.
+/// Errors only when it couldn't start, took too long or said too much.
+pub(crate) fn run_command_raw(mut cmd: Command, timeout: Duration, max_bytes: u64) -> Result<(bool, Vec<u8>), String> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -76,16 +101,20 @@ fn run(program: &PathBuf, args: &[&str], timeout: Duration) -> Result<String, St
     let stdout = child.stdout.take().ok_or("no output")?;
     // Read on a helper thread so a chatty program can't fill the pipe and stall.
     let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.take(4 * 1024 * 1024).read_to_string(&mut s);
-        s
+        let mut out = Vec::new();
+        // One byte over the cap tells a full read from a cut-off one.
+        let read = stdout.take(max_bytes + 1).read_to_end(&mut out);
+        read.map(|_| out)
     });
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let out = reader.join().unwrap_or_default();
-                return if status.success() { Ok(out) } else { Err("command failed".into()) };
+                let out = reader.join().map_err(|_| "couldn't read output")?.map_err(|e| e.to_string())?;
+                if out.len() as u64 > max_bytes {
+                    return Err("too much output".into());
+                }
+                return Ok((status.success(), out));
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
@@ -540,7 +569,7 @@ pub fn is_model_name(name: &str) -> bool {
 }
 
 /// Minimal RFC 3339 -> Unix seconds ("2026-10-19T10:15:30.123+02:00").
-fn parse_rfc3339_secs(s: &str) -> Option<i64> {
+pub(crate) fn parse_rfc3339_secs(s: &str) -> Option<i64> {
     let (date, rest) = s.split_once('T')?;
     let mut d = date.split('-').map(|x| x.parse::<i64>());
     let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
