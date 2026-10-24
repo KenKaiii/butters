@@ -96,6 +96,16 @@ pub fn footprint(pid: u32) -> Option<u64> {
     (rc == 0 && info.ri_phys_footprint > 0).then_some(info.ri_phys_footprint)
 }
 
+pub fn start_us(pid: u32) -> Option<u64> {
+    let raw = libc::c_int::try_from(pid).ok()?;
+    // SAFETY: zeroed is a valid proc_bsdinfo; proc_pidinfo writes at most
+    // the size we pass and returns how much it wrote.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe { libc::proc_pidinfo(raw, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    (n == size).then(|| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+}
+
 pub fn responsible_pid(pid: u32) -> Option<u32> {
     use std::sync::OnceLock;
     type Responsible = unsafe extern "C" fn(libc::pid_t) -> libc::pid_t;

@@ -11,6 +11,10 @@ pub struct ProcInfo {
     /// Seconds since the Unix epoch. Together with `pid` this identifies a
     /// process even if the OS later hands the same pid to something else.
     pub start_time: u64,
+    /// Start time in microseconds, when the OS knows it finer than a second.
+    /// Tells a real parent from a newer process that got a dead parent's pid
+    /// in the same second (Windows reuses pids quickly).
+    pub start_us: Option<u64>,
     pub name: String,
     pub exe: Option<String>,
     pub cmd: Vec<String>,

@@ -79,6 +79,12 @@ pub fn footprint(pid: u32) -> Option<u64> {
     imp::footprint(pid)
 }
 
+/// When the process started, in microseconds (comparable between processes
+/// on this machine), if the OS knows it finer than a second.
+pub fn start_us(pid: u32) -> Option<u64> {
+    imp::start_us(pid)
+}
+
 /// The app macOS holds responsible for a helper process (e.g. Docker Desktop
 /// for its virtual machine). `None` where unknown or unsupported.
 pub fn responsible_pid(pid: u32) -> Option<u32> {

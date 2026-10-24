@@ -108,10 +108,16 @@ impl<'a> Tree<'a> {
     }
 
     /// The parent, unless it is gone or its pid was reused by a newer process.
+    /// Whole seconds can't tell a parent from a newcomer that took its pid in
+    /// the same second; the finer start time can, when both have one.
     fn valid_parent(by_pid: &HashMap<u32, &ProcInfo>, p: &ProcInfo) -> Option<u32> {
         let parent = p.parent?;
         let pp = by_pid.get(&parent)?;
-        (pp.pid != p.pid && pp.start_time <= p.start_time).then_some(parent)
+        let older = match (pp.start_us, p.start_us) {
+            (Some(a), Some(b)) => a <= b,
+            _ => pp.start_time <= p.start_time,
+        };
+        (pp.pid != p.pid && older).then_some(parent)
     }
 
     fn parent(&self, pid: u32) -> Option<u32> {
@@ -818,6 +824,24 @@ mod tests {
         let groups = build_groups(&[launchd(), newer, child], 999);
         let vite = groups.iter().find(|g| g.title == "Vite dev server").unwrap();
         assert!(vite.orphaned);
+    }
+
+    #[test]
+    fn a_pid_reused_in_the_same_second_is_not_the_parent() {
+        // The terminal (pid 80) closed and Windows gave its pid to redis,
+        // all within the same second the dev server started.
+        let mut newer = p(80, 1, "redis-server", &["redis-server"]);
+        newer.start_time = 100;
+        newer.start_us = Some(100_400_000);
+        let mut child = p(81, 80, "node", &["node", "/p/node_modules/vite/bin/vite.js"]);
+        child.start_time = 100;
+        child.start_us = Some(100_200_000);
+        let groups = build_groups(&[launchd(), newer.clone(), child.clone()], 999);
+        assert!(groups.iter().find(|g| g.title == "Vite dev server").unwrap().orphaned, "redis isn't its parent");
+        // A real parent started first, even in the same second.
+        newer.start_us = Some(100_100_000);
+        let groups = build_groups(&[launchd(), newer, child], 999);
+        assert!(!groups.iter().any(|g| g.title == "Vite dev server" && g.orphaned));
     }
 
     #[test]

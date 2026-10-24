@@ -89,6 +89,23 @@ pub fn footprint(pid: u32) -> Option<u64> {
     }
 }
 
+pub fn start_us(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: plain Win32 calls; the handle is closed before returning and
+    // every FILETIME is a valid out-pointer.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let (mut created, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let ok = GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user);
+        let _ = CloseHandle(h);
+        ok.ok()?;
+        // 100 ns steps since 1601.
+        let ticks = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+        (ticks > 0).then_some(ticks / 10)
+    }
+}
+
 pub fn responsible_pid(_pid: u32) -> Option<u32> {
     None
 }

@@ -186,6 +186,7 @@ impl Sampler {
                 pid,
                 parent: p.parent().map(|pp| pp.as_u32()),
                 start_time: p.start_time(),
+                start_us: platform::start_us(pid),
                 name: p.name().to_string_lossy().into_owned(),
                 exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
                 cmd: p.cmd().iter().take(8).map(|a| a.to_string_lossy().into_owned()).collect(),
