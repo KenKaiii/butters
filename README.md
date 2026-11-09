@@ -23,10 +23,13 @@
   <a href="https://github.com/KenKaiii/butters/stargazers"><img src="https://img.shields.io/github/stars/KenKaiii/butters?style=for-the-badge&label=Stars&color=yellow" alt="Star Butters on GitHub"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
   <a href="https://youtube.com/@kenkaidoesai"><img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
-  <a href="https://skool.com/kenkai"><img src="https://img.shields.io/badge/Skool-Community-b0b6ff?style=for-the-badge" alt="Skool"></a>
+  <a href="https://www.skool.com/raid"><img src="https://img.shields.io/badge/Skool-Free%20community-b0b6ff?style=for-the-badge" alt="Free Skool community"></a>
 </p>
 
 Butters lives in your menu bar and keeps a busy dev machine running smooth. A day of coding agents, dev servers and MCP servers leaves a pile of leftovers behind: servers whose terminal is long gone, idle agent sessions, Docker containers nobody touched all week. Butters finds them, tells you what each one is holding, and closes the ones you pick. Nothing closes until you say so.
+
+> [!TIP]
+> **Want the step-by-step guide?** The full Butters setup, a free 7-day build challenge and 20+ more projects are in my free community: **[skool.com/raid](https://www.skool.com/raid)**
 
 ## Why Butters
 
@@ -86,4 +89,8 @@ Tests: `cd src-tauri && cargo test` for the rules and safety checks, `pnpm test:
 
 ## Learn with me
 
-Come build with me in my [Skool community](https://skool.com/kenkai). Get help, share what you're making, and learn how to get more out of AI.
+New to building with AI? Start in **[RAID](https://www.skool.com/raid)**, my free community:
+
+- Step-by-step setup for Butters
+- A free 7-day challenge: build your first app, one short lesson a day
+- 20+ step-by-step projects you can build yourself
