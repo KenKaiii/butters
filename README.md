@@ -24,12 +24,17 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
   <a href="https://youtube.com/@kenkaidoesai"><img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
   <a href="https://www.skool.com/raid"><img src="https://img.shields.io/badge/Skool-Free%20community-b0b6ff?style=for-the-badge" alt="Free Skool community"></a>
+  <a href="https://www.skool.com/kenkai"><img src="https://img.shields.io/badge/Skool-Raid%2B-b0b6ff?style=for-the-badge" alt="Raid+ on Skool"></a>
+  <a href="https://www.kenkais.com"><img src="https://img.shields.io/badge/Website-kenkais.com-b0b6ff?style=for-the-badge" alt="kenkais.com"></a>
 </p>
 
 Butters lives in your menu bar and keeps a busy dev machine running smooth. A day of coding agents, dev servers and MCP servers leaves a pile of leftovers behind: servers whose terminal is long gone, idle agent sessions, Docker containers nobody touched all week. Butters finds them, tells you what each one is holding, and closes the ones you pick. Nothing closes until you say so.
 
 > [!TIP]
-> **Want the step-by-step guide?** The full Butters setup, a free 7-day build challenge and 20+ more projects are in my free community: **[skool.com/raid](https://www.skool.com/raid)**
+> **Want the step-by-step guide?**
+> - **Free community:** the full Butters setup, a 7-day build challenge and 20+ projects: [skool.com/raid](https://www.skool.com/raid)
+> - **Raid+:** make money with AI, a sellable app in 30 days, live every Thursday: [skool.com/kenkai](https://www.skool.com/kenkai)
+> - **Want it built for you?** [work.kenkais.com](https://work.kenkais.com/)
 
 ## Why Butters
 
@@ -94,3 +99,7 @@ New to building with AI? Start in **[RAID](https://www.skool.com/raid)**, my fre
 - Step-by-step setup for Butters
 - A free 7-day challenge: build your first app, one short lesson a day
 - 20+ step-by-step projects you can build yourself
+
+Want to make money with AI? **[Raid+](https://www.skool.com/kenkai)**: a sellable app in 30 days, live every Thursday.
+
+Want it built for you? **[work.kenkais.com](https://work.kenkais.com/)**
